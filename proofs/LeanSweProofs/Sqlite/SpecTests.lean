@@ -1,20 +1,16 @@
 import Core.NondetTest
-import LeanSwe.Sqlite.Raw.Types
+import LeanSwe.Sqlite.Types
 
-namespace LeanSwe.Sqlite.Raw
+namespace LeanSwe.Sqlite
 
 open Core (NondetTest)
 open Core.NondetTest
 
-/-- Extract the deterministic token from a `RawDbHandle` (`0` for opaque `.ext` handles). -/
-def rawDbToken : RawDbHandle → UInt64
-  | .mock tok => tok
-  | .ext _ => 0
+/-- Return the deterministic `UInt64` token for a mock database handle. -/
+def rawDbToken (tok : UInt64) : UInt64 := tok
 
-/-- Extract the deterministic token from a `RawStmtHandle` (`0` for opaque `.ext` handles). -/
-def rawStmtToken : RawStmtHandle → UInt64
-  | .mock tok => tok
-  | .ext _ => 0
+/-- Return the deterministic `UInt64` token for a mock statement handle. -/
+def rawStmtToken (tok : UInt64) : UInt64 := tok
 
 /-- Recorded thin-C hook invocation in `MockCState.calls`. -/
 inductive MockCCall where
@@ -116,10 +112,10 @@ inductive MockCFailStep where
   | finalizeResult (out : RawFinalizeResult)
   deriving Repr, BEq, DecidableEq
 
-/-- Pure deterministic state for testing `Internal.mkRawOps` over `CSqliteOpsM (StateM MockCState)`. -/
+/-- Pure deterministic state for testing `Internal.mkRawOps` over `CSqliteOpsM (StateM MockCState) UInt64 UInt64`. -/
 structure MockCState where
   /-- Lean-managed handle table updated via `CSqliteOpsM.modifyTable`. -/
-  table : RawHandleTable := {}
+  table : RawHandleTable UInt64 UInt64 := {}
   /-- Next deterministic raw DB token (`100`-based). -/
   nextRawDbTok : UInt64 := 100
   /-- Next deterministic raw statement token (`200`-based). -/
@@ -166,12 +162,12 @@ def hasLiveRawStmtForDb (dbTok : UInt64) : List (UInt64 × UInt64) → Bool
 
 /-- Allocate or override the `(stmt?, consumedByteLen)` result for a succeeding `mockCOps.prepareV2` call. -/
 def mockPrepareSuccess (dbTok : UInt64) (sql : String) (s1 : MockCState) :
-    Except SqliteRawError (Option RawStmtHandle × Nat) × MockCState :=
+    Except SqliteRawError (Option UInt64 × Nat) × MockCState :=
   match s1.prepareOverride? with
   | some (false, consumed) => (.ok (none, consumed), s1)
   | some (true, consumed) =>
     let stTok := s1.nextRawStmtTok
-    (.ok (some (.mock stTok), consumed),
+    (.ok (some stTok, consumed),
       { s1 with nextRawStmtTok := stTok + 1, liveRawStmts := s1.liveRawStmts ++ [(dbTok, stTok)] })
   | none =>
     if sql.toList.isEmpty then
@@ -184,14 +180,14 @@ def mockPrepareSuccess (dbTok : UInt64) (sql : String) (s1 : MockCState) :
           [.row, .done]
         else
           s1.stepQueue
-      (.ok (some (.mock stTok), consumed),
+      (.ok (some stTok, consumed),
         { s1 with
           nextRawStmtTok := stTok + 1
           liveRawStmts := s1.liveRawStmts ++ [(dbTok, stTok)]
           stepQueue := extraQueue })
 
 /-- Pure `StateM MockCState` thin-C backend modeling `sqlite3_*` single-call primitives. -/
-def mockCOps : CSqliteOpsM (StateM MockCState) :=
+def mockCOps : CSqliteOpsM (StateM MockCState) UInt64 UInt64 :=
   { modifyTable := fun f s =>
       let (a, t') := f s.table
       (a, { s with table := t' })
@@ -201,7 +197,7 @@ def mockCOps : CSqliteOpsM (StateM MockCState) :=
       | .openV2 err => (.error err, s1)
       | _ =>
         let tok := s1.nextRawDbTok
-        (.ok (.mock tok),
+        (.ok tok,
           { s1 with
             nextRawDbTok := tok + 1
             liveRawDbs := s1.liveRawDbs ++ [tok] })
@@ -466,7 +462,7 @@ def mockCOps : CSqliteOpsM (StateM MockCState) :=
 
 /-- Construct an initial `MockCState` with one open database handle (`id := 1`, raw token `100`). -/
 def mockStateWithOpenDb (failStep : MockCFailStep := .none) : MockCState :=
-  { table := { nextDbId := 2, nextStmtId := 1, dbs := [(1, .mock 100)], stmts := [] }
+  { table := { nextDbId := 2, nextStmtId := 1, dbs := [(1, 100)], stmts := [] }
     nextRawDbTok := 101
     nextRawStmtTok := 200
     liveRawDbs := [100]
@@ -477,7 +473,7 @@ def mockStateWithOpenDb (failStep : MockCFailStep := .none) : MockCState :=
 def mockStateWithOpenStmt (expectedParams : UInt32 := 0) (stepQueue : List RawStepTag := [])
     (cols : Array MockCColumn := #[]) (failStep : MockCFailStep := .none) : MockCState :=
   let sh : StmtHandle := { id := 1, dbId := 1 }
-  { table := { nextDbId := 2, nextStmtId := 2, dbs := [(1, .mock 100)], stmts := [(sh, .mock 200)] }
+  { table := { nextDbId := 2, nextStmtId := 2, dbs := [(1, 100)], stmts := [(sh, 200)] }
     nextRawDbTok := 101
     nextRawStmtTok := 201
     liveRawDbs := [100]
@@ -530,7 +526,7 @@ def test_sqliteraw_mapRawError_mapsKnownKinds
 def test_sqliteraw_mapRawError_consistentAcrossBackends
     {runner} [NondetTest runner]
     (ops : RawSqliteOps)
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let raw ← nondet SqliteRawError
   NondetTest.assert ((mkRaw mockCOps).mapRawError raw = ops.mapRawError raw)
 
@@ -538,7 +534,7 @@ def test_sqliteraw_mapRawError_consistentAcrossBackends
     `busyTimeoutMs > maxBusyTimeoutMs` with `.invalidInput` before making any C call. -/
 def test_sqliteraw_openDb_rejectsInvalidPathAndConfigWithoutCallingC
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let path ← nondet String
   let cfg ← nondet OpenConfig
   assume (path = "" ∨ Char.ofNat 0 ∈ path.toList ∨
@@ -553,7 +549,7 @@ def test_sqliteraw_openDb_rejectsInvalidPathAndConfigWithoutCallingC
     (draining `.row` before `.done` and finalizing every pragma statement), and records one active DB handle. -/
 def test_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let path ← nondet String
   let cfg ← nondet OpenConfig
   assume (path ≠ "" ∧ Char.ofNat 0 ∉ path.toList)
@@ -593,7 +589,7 @@ def test_sqliteraw_openDb_computesExactOpenFlagsAndSetupOrder
     overridden `mode=rw&mode=memory`, and read-only `mode=ro` URIs. -/
 def test_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let name ← nondet String
   assume (Char.ofNat 0 ∉ name.toList ∧ '?' ∉ name.toList ∧ '#' ∉ name.toList)
   assume (name.toUTF8.data.toList.take 2 != [0x2F, 0x2F])
@@ -628,7 +624,7 @@ def test_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets
     and non-URI `"disk_mode=memory.db"`. -/
 def test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let ops := mkRaw mockCOps
   let cfg : OpenConfig := { readOnly := false, createIfMissing := true, walMode := true, foreignKeys := false }
   let walCall := MockCCall.prepareV2 100 "PRAGMA journal_mode = WAL;"
@@ -660,7 +656,7 @@ def test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets
     to `.cantOpen none`, and leaves zero live DB or statement handles. -/
 def test_sqliteraw_openDb_closesHandleOnAnySetupFailure
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let code ← nondet UInt32
   let detail ← nondet String
   let ops := mkRaw mockCOps
@@ -698,7 +694,7 @@ def test_sqliteraw_openDb_closesHandleOnAnySetupFailure
     double-close / unknown handles with `.misuse`. -/
 def test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let unknownId ← nondet UInt64
   assume (unknownId ≠ 1 ∧ unknownId ≠ 2)
   let ops := mkRaw mockCOps
@@ -739,7 +735,7 @@ def test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy
     `DbHandle`s with `.misuse` without calling `prepareV2`, and rejects empty/whitespace-only SQL `(none, _)` with `.misuse`. -/
 def test_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let pre ← nondet String
   let suf ← nondet String
   let closedId ← nondet UInt64
@@ -768,7 +764,7 @@ def test_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql
     in the unconsumed tail after `;`. -/
 def test_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let lineBody ← nondet String
   let blockBody ← nondet String
   assume (Char.ofNat 0 ∉ lineBody.toList ∧ '\n' ∉ lineBody.toList ∧ lineBody.toUTF8.size ≤ 4096)
@@ -795,7 +791,7 @@ def test_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail
     `'/'`-free `"SELECT 1; /*" ++ body`) with `.misuse`, calling `finalize` so zero raw statements leak. -/
 def test_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinalizes
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let unclosedBody ← nondet String
   assume (Char.ofNat 0 ∉ unclosedBody.toList ∧ '/' ∉ unclosedBody.toList ∧ unclosedBody.toUTF8.size ≤ 4096)
   let ops := mkRaw mockCOps
@@ -833,7 +829,7 @@ def test_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinalizes
     indices in order, and propagates C errors. -/
 def test_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let iVal ← nondet Int64
   let fVal ← nondet Float
   let sVal ← nondet String
@@ -869,7 +865,7 @@ def test_sqliteraw_bind_resetsValidatesCountAndBindsAllFiveTypes
     `sqliteCode = none`), and propagates `SQLITE_MISUSE` from all `column*` hooks instead of fabricating defaults. -/
 def test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let iVal ← nondet Int64
   let fVal ← nondet Float
   let sVal ← nondet String
@@ -919,7 +915,7 @@ def test_sqliteraw_step_decodesColumnsValidatesUtf8AndPropagatesColumnErrors
     double-finalize with `.misuse`. -/
 def test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize
     {runner} [NondetTest runner]
-    (mkRaw : CSqliteOpsM (StateM MockCState) → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
+    (mkRaw : CSqliteOpsM (StateM MockCState) UInt64 UInt64 → RawSqliteOpsM (StateM MockCState)) : runner Unit := do
   let code ← nondet UInt32
   let detail ← nondet String
   let ops := mkRaw mockCOps
@@ -944,4 +940,4 @@ def test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinaliz
   NondetTest.assert ((∃ e, rRej = .error e ∧ e.kind = .busy) ∧
     sRej1.liveRawStmts = [(100, 200)] ∧ (ops.activeStmtCount.run sRej1).1 = 1)
 
-end LeanSwe.Sqlite.Raw
+end LeanSwe.Sqlite

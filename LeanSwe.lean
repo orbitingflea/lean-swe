@@ -30,11 +30,8 @@ import LeanSwe.EnvVars.Impl
 import LeanSwe.Uuid.Types
 import LeanSwe.Uuid.Impl
 import LeanSwe.Uuid.Interface
-import LeanSwe.Sqlite.Raw.Types
-import LeanSwe.Sqlite.Raw.Impl.UriAndSql
-import LeanSwe.Sqlite.Raw.Impl
-import LeanSwe.Sqlite.Raw.Interface
 import LeanSwe.Sqlite.Types
+import LeanSwe.Sqlite.Impl.UriAndSql
 import LeanSwe.Sqlite.Impl
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Git.Types

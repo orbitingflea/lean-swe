@@ -1,9 +1,9 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.ObeysPureEquiv
-import LeanSweProofs.Sqlite.Raw.Proofs.ObeysLocks
+import LeanSweProofs.Sqlite.Proofs.ObeysPureEquiv
+import LeanSweProofs.Sqlite.Proofs.ObeysLocks
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 private def Sim {W α : Type} (proj : W → Model.SqliteRawState)
     (mImpl : StateM W α) (mMod : StateM Model.SqliteRawState α) : Prop :=
@@ -49,7 +49,7 @@ private theorem Sim.tryFinally' {W α β : Type} {proj : W → Model.SqliteRawSt
   Sim.bind ha (fun a => Sim.bind (hf (some a)) (fun b => Sim.pure (a, b)))
 
 private theorem sim_of_cstep {W α : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
     (req : Model.CStepReq) (wrap : α → Model.CStepOut)
     (hWrapInj : ∀ x y, wrap x = wrap y → x = y)
@@ -68,7 +68,7 @@ private theorem sim_of_cstep {W α : Type} {proj : W → Model.SqliteRawState}
   exact ⟨hWrapInj _ _ hStep.1, hStep.2⟩
 
 private theorem sim_unit_table {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
     (req : Model.CStepReq)
     {mImpl : StateM W Unit} {mMod : StateM Model.SqliteRawState Unit}
@@ -88,9 +88,9 @@ private theorem sim_unit_table {W : Type} {proj : W → Model.SqliteRawState}
   exact ⟨Subsingleton.elim _ _, hStep.2⟩
 
 private theorem sim_stepPragmaLoop {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (rawStmt : RawStmtHandle) (fuel : Nat) :
+    (rawStmt : UInt64) (fuel : Nat) :
     Sim proj (Model.stepPragmaLoopModel cops rawStmt fuel)
       (Model.stepPragmaLoopModel Model.modelCSqliteOps rawStmt fuel) := by
   induction fuel with
@@ -109,9 +109,9 @@ private theorem sim_stepPragmaLoop {W : Type} {proj : W → Model.SqliteRawState
       | row => exact ih
 
 private theorem sim_runSetupPragma {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (rawDb : RawDbHandle) (sql : String) :
+    (rawDb : UInt64) (sql : String) :
     Sim proj (Model.runSetupPragmaModel cops rawDb sql)
       (Model.runSetupPragmaModel Model.modelCSqliteOps rawDb sql) := by
   unfold Model.runSetupPragmaModel
@@ -141,9 +141,9 @@ private theorem sim_runSetupPragma {W : Type} {proj : W → Model.SqliteRawState
         | rejected _ => exact Sim.pure _
 
 private theorem sim_setupConnection {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (path : String) (cfg : OpenConfig) (rawDb : RawDbHandle) :
+    (path : String) (cfg : OpenConfig) (rawDb : UInt64) :
     Sim proj (Model.setupConnectionModel cops path cfg rawDb)
       (Model.setupConnectionModel Model.modelCSqliteOps path cfg rawDb) := by
   unfold Model.setupConnectionModel
@@ -180,9 +180,9 @@ private theorem sim_setupConnection {W : Type} {proj : W → Model.SqliteRawStat
           | true => exact sim_runSetupPragma hC rawDb "PRAGMA journal_mode = WAL;"
 
 private theorem sim_bindOneParam {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (rawStmt : RawStmtHandle) (idx : UInt32) (val : SqliteValue) :
+    (rawStmt : UInt64) (idx : UInt32) (val : SqliteValue) :
     Sim proj (Model.bindOneParamModel cops rawStmt idx val)
       (Model.bindOneParamModel Model.modelCSqliteOps rawStmt idx val) := by
   cases val with
@@ -203,9 +203,9 @@ private theorem sim_bindOneParam {W : Type} {proj : W → Model.SqliteRawState}
       (fun _ _ h => Model.CStepOut.unitRes.inj h) rfl rfl
 
 private theorem sim_bindLoop {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (rawStmt : RawStmtHandle) (params : Array SqliteValue) (rem : Nat) :
+    (rawStmt : UInt64) (params : Array SqliteValue) (rem : Nat) :
     Sim proj (Model.bindLoopModel cops rawStmt params rem)
       (Model.bindLoopModel Model.modelCSqliteOps rawStmt params rem) := by
   induction rem with
@@ -219,9 +219,9 @@ private theorem sim_bindLoop {W : Type} {proj : W → Model.SqliteRawState}
     | ok _ => exact ih
 
 private theorem sim_decodeColumns {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
-    (rawStmt : RawStmtHandle) (total rem : Nat) (acc : Array SqliteValue) :
+    (rawStmt : UInt64) (total rem : Nat) (acc : Array SqliteValue) :
     Sim proj (Model.decodeColumnsModel cops rawStmt total rem acc)
       (Model.decodeColumnsModel Model.modelCSqliteOps rawStmt total rem acc) := by
   induction rem generalizing acc with
@@ -274,7 +274,7 @@ private theorem sim_decodeColumns {W : Type} {proj : W → Model.SqliteRawState}
       · exact ih (acc.push .null)
 
 private theorem sim_withStmtLock {W α : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
     (stmt : StmtHandle) {act₁ : StateM W α} {act₂ : StateM Model.SqliteRawState α}
     (hAct : Sim proj act₁ act₂) :
@@ -294,7 +294,7 @@ private theorem sim_withStmtLock {W α : Type} {proj : W → Model.SqliteRawStat
   exact Sim.pure pair.1
 
 private theorem sim_mkRawOpsModel_step {W : Type} {proj : W → Model.SqliteRawState}
-    {cops : CSqliteOpsM (StateM W)}
+    {cops : CSqliteOpsM (StateM W) UInt64 UInt64}
     (hC : Core.ObeysStep proj Model.cStepWf (Model.execCStep cops) Model.allowedCStep)
     (req : Model.RawStepReq) :
     Sim proj (Model.execRawStep (Model.mkRawOpsModel cops) req)
@@ -521,10 +521,11 @@ private theorem sim_mkRawOpsModel_step {W : Type} {proj : W → Model.SqliteRawS
 /-- `Internal.mkRawOps` satisfies `Core.ObeysStepFromFinally` from `CSqliteOpsM` to `RawSqliteOpsM`. -/
 theorem mkRawOps_obeys :
     Core.ObeysStepFromFinally id Model.cStepWf
-      Model.execCStep Model.allowedCStep Model.rawStepWf
-      Internal.mkRawOps Model.execPkgStep Model.allowedPkgStep := by
+      Model.execCStep Model.allowedCStep Model.rawOpsStepWf
+      (fun {m} [Monad m] [MonadFinally m] => @Internal.mkRawOps m _ _ UInt64 UInt64)
+      Model.execRawStep Model.allowedRawOpsStep := by
   intro W proj cops hC w req hWf
-  dsimp only [Model.execPkgStep, Model.allowedPkgStep, Function.comp, id]
+  dsimp only [Model.allowedRawOpsStep, Function.comp, id]
   rw [mkRawOps_eq_model cops]
   rcases sim_mkRawOpsModel_step hC req w with ⟨hVal, hSt⟩
   refine ⟨hVal, hSt, ?_⟩
@@ -538,4 +539,4 @@ theorem modelCSqliteOps_obeys :
   intro s req _
   exact ⟨rfl, rfl⟩
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

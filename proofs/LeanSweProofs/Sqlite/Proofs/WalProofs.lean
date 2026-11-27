@@ -1,10 +1,10 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.Helpers
+import LeanSweProofs.Sqlite.Proofs.Helpers
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Proof of `test_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets` for `Internal.mkRawOps`. -/
 theorem proof_sqliteraw_openDb_skipsWalOnMemoryAndReadOnlyTargets :
@@ -153,9 +153,9 @@ theorem proof_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy :
         (List.drop (mockConsumedBytesUpToSemi "SELECT 1".toByteArray.data.toList)
           "SELECT 1".toByteArray.data.toList) = false) ↔ False := by decide
   have hSel1Zero : Internal.hasZeroByte "SELECT 1".toByteArray.data.toList = false := by decide
-  have hAct1Live : Internal.hasActiveStmtForDb 1 [({ id := 1, dbId := 1 }, RawStmtHandle.mock 200)] = true := rfl
-  have hAct2Live : Internal.hasActiveStmtForDb 2 [({ id := 1, dbId := 1 }, RawStmtHandle.mock 200)] = false := rfl
-  have hAct1Nil : Internal.hasActiveStmtForDb 1 [] = false := rfl
+  have hAct1Live : Internal.hasActiveStmtForDb 1 [({ id := 1, dbId := 1 }, (200 : UInt64))] = true := rfl
+  have hAct2Live : Internal.hasActiveStmtForDb 2 [({ id := 1, dbId := 1 }, (200 : UInt64))] = false := rfl
+  have hAct1Nil : Internal.hasActiveStmtForDb 1 ([] : List (StmtHandle × UInt64)) = false := rfl
   dsimp only [test_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy,
     Internal.mkRawOps, Internal.withStmtLock, Internal.lookupRawDb, Internal.eraseRawDb,
     Internal.insertRawDb, Internal.lookupRawStmt, Internal.eraseRawStmt, Internal.insertRawStmt,
@@ -175,4 +175,4 @@ theorem reach_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy :
   ⟨99, ⟨by decide, by decide⟩,
     proof_sqliteraw_openClose_preservesActiveDbCountAndRejectsClosedOrBusy 99 ⟨by decide, by decide⟩⟩
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

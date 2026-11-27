@@ -196,16 +196,6 @@
     "LeanSwe.Sqlite": {
       "kind": "model",
       "purity": "mixed",
-      "deps": [
-        "LeanSwe.Sqlite.Raw"
-      ],
-      "fuzz_suite": "sqlite",
-      "external_boundary": false,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.Sqlite.Raw": {
-      "kind": "model",
-      "purity": "nondet_io",
       "deps": [],
       "fuzz_suite": "sqlite",
       "external_boundary": true,

@@ -1,7 +1,7 @@
 import Std.Data.HashMap
 import Std.Data.HashSet
 import LeanSwe.Sqlite.Types
-import LeanSweProofs.Sqlite.Raw.Model
+import LeanSweProofs.Sqlite.Model.PureSpec
 
 namespace LeanSwe.Sqlite.Model
 
@@ -74,54 +74,6 @@ def asciiLowerByte (b : UInt8) : UInt8 :=
 def asciiLower (s : String) : String :=
   String.ofList (s.toList.map fun c =>
     if 'A' ≤ c && c ≤ 'Z' then Char.ofNat (c.toNat + 32) else c)
-
-/-- Return `msg` if non-empty, or `fallback` otherwise. -/
-def nonEmptyMsg (fallback msg : String) : String :=
-  if msg.isEmpty then fallback else msg
-
-/-- Map a primary SQLite result code (`code &&& 0xFF`) into `SqliteErrorKind`. -/
-def classifySqliteCode (code : UInt32) (defaultKind : SqliteErrorKind) : SqliteErrorKind :=
-  match (code &&& 0xFF).toNat with
-  | 5 | 6 => .busy
-  | 14 => .notFound
-  | 19 => .constraint
-  | 21 => .misuse
-  | 25 => .invalidInput
-  | _ => defaultKind
-
-/-- Convert a pure `SqliteRawError` into a normalized `SqliteError` with non-empty message. -/
-def mapRawError : SqliteRawError → SqliteError
-  | .cantOpen path? code detail =>
-    { kind := .notFound
-      sqliteCode := some code
-      path := path?
-      message := nonEmptyMsg "unable to open sqlite database" detail }
-  | .busy code detail =>
-    { kind := .busy
-      sqliteCode := some code
-      message := nonEmptyMsg "sqlite database is busy" detail }
-  | .constraint code detail =>
-    { kind := .constraint
-      sqliteCode := some code
-      message := nonEmptyMsg "sqlite constraint failed" detail }
-  | .misuse code detail =>
-    { kind := .misuse
-      sqliteCode := some code
-      message := nonEmptyMsg "sqlite library misuse" detail }
-  | .invalidArgument detail =>
-    { kind := .invalidInput
-      message := nonEmptyMsg "invalid sqlite argument" detail }
-  | .ioFailure code detail =>
-    { kind := .ioError
-      sqliteCode := some code
-      message := nonEmptyMsg s!"sqlite io failure ({code})" detail }
-  | .sqliteCodeError code detail =>
-    { kind := classifySqliteCode code .ioError
-      sqliteCode := some code
-      message := nonEmptyMsg s!"sqlite error ({code})" detail }
-  | .userError detail =>
-    { kind := .ioError
-      message := nonEmptyMsg "sqlite error" detail }
 
 /-- Validate `OpenConfig`, returning an unmapped `SqliteRawError` on failure. -/
 def validateConfigRaw (cfg : OpenConfig) : Except SqliteRawError Unit :=
@@ -1157,7 +1109,7 @@ private def parseRawSqlNoCap (bs : ByteArray) : Except SqliteRawError (SqlStmt �
 /-- Parse `sql` without the 64 KiB curated byte cap (still bounded by `maxSqlByteLen` and NUL checks). -/
 def parseCuratedSqlNoCapRaw (sql : String) : Except SqliteRawError (SqlStmt × Nat) := do
   let bs := sql.toUTF8
-  if bs.size > LeanSwe.Sqlite.Raw.maxSqlByteLen then
+  if bs.size > maxSqlByteLen then
     .error (.invalidArgument "SQL statement exceeds maximum byte length")
   else if hasZeroByteIdx bs 0 then
     .error (.invalidArgument "SQL string contains embedded NUL byte")
@@ -1168,7 +1120,7 @@ private def validateStmtNoCapWith (mapRaw : SqliteRawError → SqliteError) (sql
     (params : Array SqliteValue) : Except SqliteError SqlStmt :=
   let bs := sql.toUTF8
   let rawRes : Except SqliteRawError SqlStmt := do
-    if bs.size > LeanSwe.Sqlite.Raw.maxSqlByteLen then
+    if bs.size > maxSqlByteLen then
       .error (.invalidArgument "SQL statement exceeds maximum byte length")
     else if hasZeroByteIdx bs 0 then
       .error (.invalidArgument "SQL string contains embedded NUL byte")
@@ -5211,7 +5163,7 @@ private def isDdlStmt : SqlStmt → Bool
 private def modelPrepare (db : DbHandle) (sql : String) (st : SqliteWorldState) :
     Except SqliteError StmtHandle × SqliteWorldState :=
   let bs := sql.toUTF8
-  if bs.size > LeanSwe.Sqlite.Raw.maxSqlByteLen then
+  if bs.size > maxSqlByteLen then
     (.error (mapRawError (.invalidArgument "SQL statement exceeds maximum byte length")), st)
   else if hasZeroByteIdx bs 0 then
     (.error (mapRawError (.invalidArgument "SQL string contains embedded NUL byte")), st)
@@ -6403,7 +6355,7 @@ private def buildInitLiveEntriesAux (uid : Nat) :
     { uid := uid, rid := rid, vals := vals, projRow := projRow } ::
       buildInitLiveEntriesAux (uid + 1) rest
 
-/-- Relational `Raw.step` validator admitting valid unordered permutations, sorter/live-cursor
+/-- Relational `step` validator admitting valid unordered permutations, sorter/live-cursor
     interleaving under mid-scan DML, optional `SQLITE_ABORT_ROLLBACK (516)`, and relational `INSERT` witnesses. -/
 def stepRawRelational (stmt : StmtHandle) (actual : Except SqliteError StepResult)
     (st : SqliteWorldState) (actualInsertRows? : Option (List SqliteRow) := none) :
@@ -6724,14 +6676,9 @@ def stepInsertRelational (st : SqliteWorldState) (db : DbHandle) (sql : String)
 /-- Total well-formedness guard on `SqliteWorldState` for `Core.ObeysStepFromFinally`. -/
 def rawStepWf (_ : SqliteWorldState) : Bool := true
 
-/-- Execute one `Raw.Model.RawStepReq` against an arbitrary `RawSqliteOpsM (StateM W)`. -/
-def execRawStep {W : Type} (raw : RawSqliteOpsM (StateM W))
-    (req : Raw.Model.RawStepReq) : StateM W Raw.Model.RawStepOut :=
-  Raw.Model.execRawStep raw req
-
 /-- Allowed deterministic single-step relation for `RawSqliteOpsM` pinned to `modelRawOps`. -/
-def allowedRawStep (s : SqliteWorldState) (req : Raw.Model.RawStepReq)
-    (out : Raw.Model.RawStepOut) (s' : SqliteWorldState) : Prop :=
+def allowedRawStep (s : SqliteWorldState) (req : RawStepReq)
+    (out : RawStepOut) (s' : SqliteWorldState) : Prop :=
   let r := (execRawStep modelRawOps req).run s
   out = r.1 ∧ s' = r.2
 

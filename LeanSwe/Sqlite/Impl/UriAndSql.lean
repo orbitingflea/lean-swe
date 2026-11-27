@@ -1,8 +1,8 @@
-import LeanSwe.Sqlite.Raw.Types
+import LeanSwe.Sqlite.Types
 
-namespace LeanSwe.Sqlite.Raw.Internal
+namespace LeanSwe.Sqlite.Internal
 
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
   (SqliteErrorKind SqliteError SqliteRawError
    sqliteOpenReadOnly sqliteOpenReadWrite sqliteOpenCreate sqliteOpenUri sqliteOpenFullMutex
    OpenConfig)
@@ -552,4 +552,4 @@ def scanSqlTailBaAux (st : SqlTailScanState) (bs : ByteArray) (idx : Nat) : Nat 
 @[inline] def scanSqlTailBa (st : SqlTailScanState) (bs : ByteArray) (idx : Nat) : Bool :=
   scanSqlTailBaAux st bs idx (bs.size - idx)
 
-end LeanSwe.Sqlite.Raw.Internal
+end LeanSwe.Sqlite.Internal

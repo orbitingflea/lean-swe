@@ -1,8 +1,8 @@
-import LeanSweProofs.Sqlite.Raw.Model.Refines
+import LeanSweProofs.Sqlite.Model.Refines
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 private def PreservesLocks {α : Type} (m : StateM Model.SqliteRawState α) : Prop :=
   ∀ s : Model.SqliteRawState, (m.run s).2.heldStmtLocks = s.heldStmtLocks
@@ -29,7 +29,7 @@ private theorem PreservesLocks.tryFinally' {α β : Type} {ma : StateM Model.Sql
     PreservesLocks.bind (hfin (some a)) (fun b => PreservesLocks.pure (a, b)))
 
 private theorem preservesLocks_modifyTable {α : Type}
-    (f : RawHandleTable → α × RawHandleTable) :
+    (f : RawHandleTable UInt64 UInt64 → α × RawHandleTable UInt64 UInt64) :
     PreservesLocks (Model.modelCSqliteOps.modifyTable f) :=
   fun _ => rfl
 
@@ -37,7 +37,7 @@ private theorem preservesLocks_openV2 (path : String) (flags : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.openV2 path flags) :=
   fun _ => rfl
 
-private theorem preservesLocks_close (rawDb : RawDbHandle) :
+private theorem preservesLocks_close (rawDb : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.close rawDb) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -45,19 +45,19 @@ private theorem preservesLocks_close (rawDb : RawDbHandle) :
   · rfl
   · split <;> rfl
 
-private theorem preservesLocks_extendedResultCodes (rawDb : RawDbHandle) (onoff : Bool) :
+private theorem preservesLocks_extendedResultCodes (rawDb : UInt64) (onoff : Bool) :
     PreservesLocks (Model.modelCSqliteOps.extendedResultCodes rawDb onoff) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_busyTimeout (rawDb : RawDbHandle) (ms : UInt32) :
+private theorem preservesLocks_busyTimeout (rawDb : UInt64) (ms : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.busyTimeout rawDb ms) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_prepareV2 (rawDb : RawDbHandle) (sql : String) :
+private theorem preservesLocks_prepareV2 (rawDb : UInt64) (sql : String) :
     PreservesLocks (Model.modelCSqliteOps.prepareV2 rawDb sql) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -65,7 +65,7 @@ private theorem preservesLocks_prepareV2 (rawDb : RawDbHandle) (sql : String) :
   · rfl
   · split <;> rfl
 
-private theorem preservesLocks_step (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_step (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.step rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -73,49 +73,49 @@ private theorem preservesLocks_step (rawStmt : RawStmtHandle) :
   · rfl
   · cases s.stepQueue <;> rfl
 
-private theorem preservesLocks_reset (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_reset (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.reset rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_clearBindings (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_clearBindings (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.clearBindings rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_finalize (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_finalize (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.finalize rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_bindParamCount (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_bindParamCount (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.bindParamCount rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_bindOneParam (rawStmt : RawStmtHandle) (idx : UInt32)
+private theorem preservesLocks_bindOneParam (rawStmt : UInt64) (idx : UInt32)
     (val : SqliteValue) :
     PreservesLocks (Model.bindOneParamModel Model.modelCSqliteOps rawStmt idx val) := by
   intro s
   cases val <;> (dsimp only [Model.bindOneParamModel, Model.modelCSqliteOps, StateT.run]; split <;> rfl)
 
-private theorem preservesLocks_columnCount (rawStmt : RawStmtHandle) :
+private theorem preservesLocks_columnCount (rawStmt : UInt64) :
     PreservesLocks (Model.modelCSqliteOps.columnCount rawStmt) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_columnType (rawStmt : RawStmtHandle) (col : UInt32) :
+private theorem preservesLocks_columnType (rawStmt : UInt64) (col : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.columnType rawStmt col) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
   split <;> rfl
 
-private theorem preservesLocks_columnInt64 (rawStmt : RawStmtHandle) (col : UInt32) :
+private theorem preservesLocks_columnInt64 (rawStmt : UInt64) (col : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.columnInt64 rawStmt col) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -125,7 +125,7 @@ private theorem preservesLocks_columnInt64 (rawStmt : RawStmtHandle) (col : UInt
     | none => rfl
     | some c => cases c <;> rfl
 
-private theorem preservesLocks_columnDouble (rawStmt : RawStmtHandle) (col : UInt32) :
+private theorem preservesLocks_columnDouble (rawStmt : UInt64) (col : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.columnDouble rawStmt col) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -135,7 +135,7 @@ private theorem preservesLocks_columnDouble (rawStmt : RawStmtHandle) (col : UIn
     | none => rfl
     | some c => cases c <;> rfl
 
-private theorem preservesLocks_columnTextBytes (rawStmt : RawStmtHandle) (col : UInt32) :
+private theorem preservesLocks_columnTextBytes (rawStmt : UInt64) (col : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.columnTextBytes rawStmt col) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -145,7 +145,7 @@ private theorem preservesLocks_columnTextBytes (rawStmt : RawStmtHandle) (col : 
     | none => rfl
     | some c => cases c <;> rfl
 
-private theorem preservesLocks_columnBlob (rawStmt : RawStmtHandle) (col : UInt32) :
+private theorem preservesLocks_columnBlob (rawStmt : UInt64) (col : UInt32) :
     PreservesLocks (Model.modelCSqliteOps.columnBlob rawStmt col) := by
   intro s
   dsimp only [Model.modelCSqliteOps, StateT.run]
@@ -155,7 +155,7 @@ private theorem preservesLocks_columnBlob (rawStmt : RawStmtHandle) (col : UInt3
     | none => rfl
     | some c => cases c <;> rfl
 
-private theorem preservesLocks_stepPragmaLoop (rawStmt : RawStmtHandle) (fuel : Nat) :
+private theorem preservesLocks_stepPragmaLoop (rawStmt : UInt64) (fuel : Nat) :
     PreservesLocks (Model.stepPragmaLoopModel Model.modelCSqliteOps rawStmt fuel) := by
   induction fuel with
   | zero => exact PreservesLocks.pure _
@@ -170,7 +170,7 @@ private theorem preservesLocks_stepPragmaLoop (rawStmt : RawStmtHandle) (fuel : 
       | done => exact PreservesLocks.pure _
       | row => exact ih
 
-private theorem preservesLocks_runSetupPragma (rawDb : RawDbHandle) (sql : String) :
+private theorem preservesLocks_runSetupPragma (rawDb : UInt64) (sql : String) :
     PreservesLocks (Model.runSetupPragmaModel Model.modelCSqliteOps rawDb sql) := by
   unfold Model.runSetupPragmaModel
   refine PreservesLocks.bind (preservesLocks_prepareV2 rawDb sql) ?_
@@ -195,7 +195,7 @@ private theorem preservesLocks_runSetupPragma (rawDb : RawDbHandle) (sql : Strin
         | rejected _ => exact PreservesLocks.pure _
 
 private theorem preservesLocks_setupConnection (path : String) (cfg : OpenConfig)
-    (rawDb : RawDbHandle) :
+    (rawDb : UInt64) :
     PreservesLocks (Model.setupConnectionModel Model.modelCSqliteOps path cfg rawDb) := by
   unfold Model.setupConnectionModel
   refine PreservesLocks.bind (preservesLocks_extendedResultCodes rawDb true) ?_
@@ -224,7 +224,7 @@ private theorem preservesLocks_setupConnection (path : String) (cfg : OpenConfig
           | false => exact PreservesLocks.pure _
           | true => exact preservesLocks_runSetupPragma rawDb "PRAGMA journal_mode = WAL;"
 
-private theorem preservesLocks_bindLoop (rawStmt : RawStmtHandle) (params : Array SqliteValue)
+private theorem preservesLocks_bindLoop (rawStmt : UInt64) (params : Array SqliteValue)
     (rem : Nat) :
     PreservesLocks (Model.bindLoopModel Model.modelCSqliteOps rawStmt params rem) := by
   induction rem with
@@ -237,7 +237,7 @@ private theorem preservesLocks_bindLoop (rawStmt : RawStmtHandle) (params : Arra
     | error _ => exact PreservesLocks.pure _
     | ok _ => exact ih
 
-private theorem preservesLocks_decodeColumns (rawStmt : RawStmtHandle) (total rem : Nat)
+private theorem preservesLocks_decodeColumns (rawStmt : UInt64) (total rem : Nat)
     (acc : Array SqliteValue) :
     PreservesLocks (Model.decodeColumnsModel Model.modelCSqliteOps rawStmt total rem acc) := by
   induction rem generalizing acc with
@@ -301,11 +301,11 @@ private theorem map_run_snd {α β : Type} (f : α → β) (m : StateM Model.Sql
 
 private theorem withStmtLockModel_wf {α : Type} (stmt : StmtHandle)
     {act : StateM Model.SqliteRawState α} (hAct : PreservesLocks act)
-    (s : Model.SqliteRawState) (hWf : Model.rawStepWf s = true) :
-    Model.rawStepWf ((Model.withStmtLockModel Model.modelCSqliteOps stmt act).run s).2 = true := by
+    (s : Model.SqliteRawState) (hWf : Model.rawOpsStepWf s = true) :
+    Model.rawOpsStepWf ((Model.withStmtLockModel Model.modelCSqliteOps stmt act).run s).2 = true := by
   have hNil : s.heldStmtLocks = [] := List.isEmpty_iff.mp hWf
   unfold Model.withStmtLockModel
-  dsimp only [Model.rawStepWf]
+  dsimp only [Model.rawOpsStepWf]
   rw [stateM_bind_run]
   have hLock : (Model.modelCSqliteOps.lockStmt stmt).run s =
       if (Model.lookupRawStmtModel stmt s.table.stmts).isSome then
@@ -339,16 +339,16 @@ private theorem withStmtLockModel_wf {α : Type} (stmt : StmtHandle)
     rfl
 
 private theorem wf_of_preservesLocks {α : Type} {m : StateM Model.SqliteRawState α}
-    (hm : PreservesLocks m) (s : Model.SqliteRawState) (hWf : Model.rawStepWf s = true) :
-    Model.rawStepWf (m.run s).2 = true := by
-  dsimp only [Model.rawStepWf] at hWf ⊢
+    (hm : PreservesLocks m) (s : Model.SqliteRawState) (hWf : Model.rawOpsStepWf s = true) :
+    Model.rawOpsStepWf (m.run s).2 = true := by
+  dsimp only [Model.rawOpsStepWf] at hWf ⊢
   rw [hm s]
   exact hWf
 
-/-- Every `Model.modelRawSqliteOps` step preserves `Model.rawStepWf` (`heldStmtLocks.isEmpty`). -/
+/-- Every `Model.modelRawSqliteOps` step preserves `Model.rawOpsStepWf` (`heldStmtLocks.isEmpty`). -/
 theorem modelRawSqliteOps_preserves_wf (s : Model.SqliteRawState) (req : Model.RawStepReq)
-    (hWf : Model.rawStepWf s = true) :
-    Model.rawStepWf ((Model.execRawStep Model.modelRawSqliteOps req).run s).2 = true := by
+    (hWf : Model.rawOpsStepWf s = true) :
+    Model.rawOpsStepWf ((Model.execRawStep Model.modelRawSqliteOps req).run s).2 = true := by
   cases req with
   | mapRawError _ => exact hWf
   | openDb path cfg =>
@@ -514,4 +514,4 @@ theorem modelRawSqliteOps_preserves_wf (s : Model.SqliteRawState) (req : Model.R
   | activeStmtCount =>
     exact wf_of_preservesLocks (preservesLocks_modifyTable Model.tableActiveStmtCount) s hWf
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

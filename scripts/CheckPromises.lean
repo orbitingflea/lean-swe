@@ -1610,11 +1610,15 @@ private def declTypeTouchesConcreteIo (ty : Expr) : MetaM Bool :=
     return false
 
 private def exprDelegatesToCanonicalDefault
-    (env : Environment) (defApiName defOpsName : Name) (e : Expr) : Bool :=
+    (env : Environment) (defApiName defOpsName : Name) (e : Expr)
+    (defOpsBaseName? : Option Name := none) : Bool :=
   let body := (peelLambdas (etaReduceExpr e)).consumeMData
+  let isCanonName (u : Name) : Bool :=
+    u == defApiName || u == defOpsName || defOpsBaseName? == some u
   let isCanonTarget (t : Expr) : Bool :=
-    let tc := t.consumeMData
-    tc.isConstOf defApiName || tc.isConstOf defOpsName
+    match t.consumeMData with
+    | .const u _ => isCanonName u
+    | _ => false
   let fn := body.getAppFn.consumeMData
   let args := body.getAppArgs
   let headOk := match fn with
@@ -1624,7 +1628,7 @@ private def exprDelegatesToCanonicalDefault
   if !headOk then false
   else
     e.getUsedConstants.all fun u =>
-      if u == defApiName || u == defOpsName || env.isProjectionFn u then true
+      if isCanonName u || env.isProjectionFn u then true
       else
         let m := modOfConst env u
         !isLeanSweMod m ||
@@ -1633,16 +1637,18 @@ private def exprDelegatesToCanonicalDefault
           | _ => m.components.contains `Types || m.components.contains `Model
 
 private def checkConcreteIoInterfaceDecls
-    (env : Environment) (pkg ifaceMod defApiName defOpsName : Name) : MetaM (Array String) := do
+    (env : Environment) (pkg ifaceMod defApiName defOpsName : Name)
+    (defOpsBaseName? : Option Name := none) : MetaM (Array String) := do
   let some idx := env.header.moduleNames.findIdx? (· == ifaceMod) | return #[]
   let some data := env.header.moduleData[idx]? | return #[]
   let mut errs : Array String := #[]
   for c in data.constants do
     let .defnInfo dv := c | continue
     if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
-    if c.name == defApiName || c.name == defOpsName then continue
+    if c.name == defApiName || c.name == defOpsName || defOpsBaseName? == some c.name then continue
     if ← declTypeTouchesConcreteIo dv.type then
-      if dv.safety != .safe || !exprDelegatesToCanonicalDefault env defApiName defOpsName dv.value then
+      if dv.safety != .safe ||
+          !exprDelegatesToCanonicalDefault env defApiName defOpsName dv.value defOpsBaseName? then
         errs := errs.push s!"MIDDLE_HOOK_VIOLATION: {c.name} in {ifaceMod} exposes concrete IO without delegating directly to {pkg}.defaultApi/defaultOps"
   return errs
 
@@ -2099,13 +2105,15 @@ private def checkManifestTrustedClosures
 
 private partial def checkCompositeCapArg
     (env : Environment) (knownPkgs : Array Name) (pkg : Name) (depSet : Std.HashSet Name)
-    (allowSelfDefaultOps : Bool) (fuel : Nat) (rawArg : Expr) : MetaM (Except String Unit) := do
+    (allowSelfDefaultOps : Bool) (fuel : Nat) (rawArg : Expr)
+    (allowSelfDefaultOpsBase : Bool := false) : MetaM (Except String Unit) := do
   let e := (etaReduceExpr rawArg).consumeMData
   match e with
   | .const c _ =>
     if isDepDefaultCap depSet c then return .ok ()
     else if isAllowedCoreRuntimeCap c then return .ok ()
     else if allowSelfDefaultOps && c == Name.str pkg "defaultOps" then return .ok ()
+    else if allowSelfDefaultOpsBase && c == Name.str pkg "defaultOpsBase" then return .ok ()
     else if c.toString.startsWith (pkg.toString ++ ".") then
       return .error s!"same-package middle hook {c} passed to {pkg} builder"
     else
@@ -2124,7 +2132,7 @@ private partial def checkCompositeCapArg
         if valArgs.isEmpty then
           return .error s!"empty capability container {ctorName} in {pkg}"
         for va in valArgs do
-          match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps (fuel - 1) va with
+          match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps (fuel - 1) va allowSelfDefaultOpsBase with
           | .ok () => pure ()
           | .error err => return .error err
         return .ok ()
@@ -2135,7 +2143,8 @@ private partial def checkCompositeCapArg
 
 private def checkCompositeDefaultDef
     (env : Environment) (knownPkgs : Array Name) (pkg : Name) (depSet : Std.HashSet Name)
-    (allowSelfDefaultOps : Bool) (defName : Name) : MetaM (Except String Name) := do
+    (allowSelfDefaultOps : Bool) (defName : Name)
+    (allowSelfDefaultOpsBase : Bool := false) : MetaM (Except String Name) := do
   let some (.defnInfo dv) := env.find? defName
     | return .error s!"missing definition {defName}"
   if dv.safety != .safe then
@@ -2153,7 +2162,7 @@ private def checkCompositeDefaultDef
   if valArgs.isEmpty then
     return .error s!"{defName} calls {mkFn} with zero capability arguments"
   for va in valArgs do
-    match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps 4 va with
+    match ← checkCompositeCapArg env knownPkgs pkg depSet allowSelfDefaultOps 4 va allowSelfDefaultOpsBase with
     | .ok () => pure ()
     | .error err => return .error s!"{defName}: {err}"
   return .ok mkFn
@@ -3140,30 +3149,45 @@ private def auditEffectfulStepSynthesis
   let defOpsName := Name.str pkg "defaultOps"
   let defOpsBaseName := Name.str pkg "defaultOpsBase"
   let defRawOpsName := Name.str pkg "defaultRawOps"
-  let defRoot? : Option Name :=
-    if env.contains defApiName && modOfConst env defApiName == ifaceMod then some defApiName
-    else if env.contains defOpsName && modOfConst env defOpsName == ifaceMod then some defOpsName
-    else if env.contains defOpsBaseName && modOfConst env defOpsBaseName == ifaceMod then some defOpsBaseName
-    else none
-  if let some defRoot0 := defRoot? then
+  let hasDefApiMod := env.contains defApiName && modOfConst env defApiName == ifaceMod
+  let hasDefOpsMod := env.contains defOpsName && modOfConst env defOpsName == ifaceMod
+  let hasDefBaseMod := env.contains defOpsBaseName && modOfConst env defOpsBaseName == ifaceMod
+  let defRoots : Array Name :=
+    if ifaceHasPrivateExtern then
+      (if hasDefApiMod then #[defApiName] else #[]) ++
+      (if hasDefOpsMod then #[defOpsName] else #[]) ++
+      (if hasDefBaseMod then #[defOpsBaseName] else #[])
+    else
+      if hasDefApiMod then #[defApiName]
+      else if hasDefOpsMod then #[defOpsName]
+      else if hasDefBaseMod then #[defOpsBaseName]
+      else #[]
+  let mut checkedDefRoots : Std.HashSet Name := {}
+  for defRoot0 in defRoots do
     let defRoot :=
-      if ifaceHasPrivateExtern && defRoot0 == defOpsName &&
-          env.contains defOpsBaseName && modOfConst env defOpsBaseName == ifaceMod then
+      if ifaceHasPrivateExtern && defRoot0 == defOpsName && hasDefBaseMod then
         match env.find? defRoot0 with
         | some (.defnInfo dv0) =>
           let b0 := dv0.value.consumeMData
-          match b0.getAppFn.consumeMData with
-          | .const hd0 _ =>
-            if !isPkgBuilderConst env pkg hd0 && b0.getUsedConstants.contains defOpsBaseName then defOpsBaseName
-            else defRoot0
-          | _ => defRoot0
+          if hasDefApiMod then
+            if b0.isConstOf defOpsBaseName then defOpsBaseName else defRoot0
+          else
+            match b0.getAppFn.consumeMData with
+            | .const hd0 _ =>
+              if !isPkgBuilderConst env pkg hd0 && b0.getUsedConstants.contains defOpsBaseName then defOpsBaseName
+              else defRoot0
+            | _ => defRoot0
         | _ => defRoot0
       else defRoot0
+    if checkedDefRoots.contains defRoot then continue
+    checkedDefRoots := checkedDefRoots.insert defRoot
+    let isLeafRoot :=
+      ifaceHasPrivateExtern && !(hasDefApiMod && (hasDefOpsMod || hasDefBaseMod) && defRoot == defApiName)
     if let some (.defnInfo dv) := env.find? defRoot then
       let body := dv.value.consumeMData
       match body.getAppFn.consumeMData with
       | .const defHead _ =>
-        if ifaceHasPrivateExtern then
+        if isLeafRoot then
           let directProven (cand : Name) : Bool :=
             let candCanon := unfoldThinIfaceBuilder env pkg cand
             st.provenMkApiExprs.any fun mkE =>
@@ -3934,6 +3958,28 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
             if !matched then
               mHookObs := recordManifestObs mHookObs hookKey
                 s!"MIDDLE_HOOK_VIOLATION: {defApiName} delegates to {defMk} which is not proven in {thmLabel}"
+      else
+        let hookKey := s!"MIDDLE_HOOK|{pkg}"
+        let defOpsBaseName := Name.str pkg "defaultOpsBase"
+        let hasDefOpsBase := match env.find? defOpsBaseName with
+          | some (.defnInfo _) => modOfConst env defOpsBaseName == ifaceMod
+          | _ => false
+        for ioErr in ← checkConcreteIoInterfaceDecls env pkg ifaceMod defApiName defOpsName
+            (if hasDefOpsBase then some defOpsBaseName else none) do
+          mHookObs := recordManifestObs mHookObs hookKey ioErr
+        if hasDefApi && (hasDefOps || hasDefOpsBase) then
+          match ← checkCompositeDefaultDef env knownPkgs pkg depSet hasDefOps defApiName hasDefOpsBase with
+          | .ok defMk =>
+            if !stepFromConjs.isEmpty then
+              let thmLabel := (thmName?.map (·.toString)).getD s!"{pkg}.Proofs.obeys_model"
+              let defMkCanon := unfoldThinIfaceBuilder env pkg defMk
+              let matched := stepFromConjs.any fun (thmMk, _, _) =>
+                thmMk == defMk || unfoldThinIfaceBuilder env pkg thmMk == defMkCanon
+              if !matched then
+                mHookObs := recordManifestObs mHookObs hookKey
+                  s!"MIDDLE_HOOK_VIOLATION: {defApiName} delegates to {defMk} which is not proven in {thmLabel}"
+          | .error err =>
+            mHookObs := recordManifestObs mHookObs hookKey s!"MIDDLE_HOOK_VIOLATION: {err}"
 
     return (mHard, mModelObs, mHookObs, mSynthObs, mModelCnt, mWiredCnt, mSynthCnt)
   ).toIO ctx { env }

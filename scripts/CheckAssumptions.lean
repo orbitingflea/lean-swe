@@ -2091,16 +2091,53 @@ private def checkRefinesModelTheorem
             if !coveredPureOps.contains c.name then
               errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: pure Interface operation {c.name} is missing from {thmName}"
         if sawAnyEffectfulOp && !coveredCapBuilders.isEmpty then
-          if let some (.defnInfo defApiDv) := env.find? (Name.str pkg "defaultApi") then
-            let defApiUsed := defApiDv.value.getUsedConstants
-            let wiredToCap := defApiUsed.any fun u =>
-              coveredCapBuilders.contains u ||
-                (moduleOfConst env u == ifaceMod &&
-                  match env.find? u with
-                  | some (.defnInfo udv) => udv.value.getUsedConstants.any coveredCapBuilders.contains
-                  | _ => false)
-            if !wiredToCap then
-              errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {Name.str pkg "defaultApi"} is not wired to mkApi in {thmName}"
+          let defApiName := Name.str pkg "defaultApi"
+          let defOpsName := Name.str pkg "defaultOps"
+          let defOpsBaseName := Name.str pkg "defaultOpsBase"
+          let defRawOpsName := Name.str pkg "defaultRawOps"
+          let hasPrivateExtern := ifaceData.constants.any fun c =>
+            isPrivateName c.name && (getExternAttrData? env c.name).isSome
+          let inIfaceDef (n : Name) : Bool := match env.find? n with
+            | some (.defnInfo _) => moduleOfConst env n == ifaceMod
+            | _ => false
+          let hasDefApi := inIfaceDef defApiName
+          let bundlesToCheck : Array Name :=
+            if hasPrivateExtern && hasDefApi then
+              #[defApiName] ++
+                (if inIfaceDef defOpsName then #[defOpsName] else #[]) ++
+                (if inIfaceDef defOpsBaseName then #[defOpsBaseName] else #[])
+            else #[defApiName]
+          let headIsCoveredBuilder (e : Expr) : Bool :=
+            match (peelLambdasRefines e).consumeMData.getAppFn.consumeMData with
+            | .const hd _ => coveredCapBuilders.contains hd
+            | _ => false
+          for bName in bundlesToCheck do
+            if let some (.defnInfo bDv) := env.find? bName then
+              if moduleOfConst env bName == ifaceMod then
+                let isSibling (u : Name) : Bool :=
+                  u == defApiName || u == defOpsName || u == defRawOpsName || u == defOpsBaseName
+                let headConst? : Option Name :=
+                  match (peelLambdasRefines bDv.value).consumeMData.getAppFn.consumeMData with
+                  | .const hd _ => some hd
+                  | _ => none
+                let headDelegatesToIfaceHelper : Bool :=
+                  match headConst? with
+                  | some hd =>
+                    !isSibling hd && moduleOfConst env hd == ifaceMod &&
+                      match env.find? hd with
+                      | some (.defnInfo udv) => headIsCoveredBuilder udv.value
+                      | _ => false
+                  | none => false
+                let opsDelegatesToBase : Bool :=
+                  bName == defOpsName && inIfaceDef defOpsBaseName &&
+                    bDv.value.consumeMData.isConstOf defOpsBaseName &&
+                    match env.find? defOpsBaseName with
+                    | some (.defnInfo bdv) => headIsCoveredBuilder bdv.value
+                    | _ => false
+                let wiredToCap :=
+                  headIsCoveredBuilder bDv.value || headDelegatesToIfaceHelper || opsDelegatesToBase
+                if !wiredToCap then
+                  errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {bName} is not wired to mkApi in {thmName}"
         if !sawAnyIfaceOp then
           errs := errs.push s!"INCOMPLETE_INTERFACE_REFINEMENT: {ifaceMod} exposes zero public operations"
       else

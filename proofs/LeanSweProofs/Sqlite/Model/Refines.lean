@@ -1,18 +1,17 @@
-import LeanSwe.Sqlite.Raw.Types
-import LeanSweProofs.Sqlite.Raw.Model
-import LeanSweProofs.Sqlite.Raw.Model.PureSpec
-import LeanSweProofs.Sqlite.Raw.Model.World
+import LeanSwe.Sqlite.Types
+import LeanSweProofs.Sqlite.Model.PureSpec
+import LeanSweProofs.Sqlite.Model.World
 
-namespace LeanSwe.Sqlite.Raw.Model
+namespace LeanSwe.Sqlite.Model
 
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
   (SqliteError SqliteRawError SqliteValue maxBusyTimeoutMs maxSqlByteLen
-   OpenConfig DbHandle StmtHandle StepResult RawDbHandle RawStmtHandle
+   OpenConfig DbHandle StmtHandle StepResult
    RawStepTag RawFinalizeResult CSqliteOpsM RawSqliteOpsM)
 
 /-- Step a prepared `PRAGMA` statement until `.done` with bounded fuel. -/
-def stepPragmaLoopModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) : Nat → m (Except SqliteRawError Unit)
+def stepPragmaLoopModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) : Nat → m (Except SqliteRawError Unit)
   | 0 => pure (.error (.userError "sqlite pragma step limit exceeded"))
   | fuel + 1 => do
     match ← cops.step rawStmt with
@@ -21,8 +20,8 @@ def stepPragmaLoopModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
     | .ok .row => stepPragmaLoopModel cops rawStmt fuel
 
 /-- Prepare, step to completion, and always finalize a connection-setup `PRAGMA` statement. -/
-def runSetupPragmaModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m)
-    (rawDb : RawDbHandle) (pragmaSql : String) : m (Except SqliteRawError Unit) := do
+def runSetupPragmaModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawDb : UInt64) (pragmaSql : String) : m (Except SqliteRawError Unit) := do
   match ← cops.prepareV2 rawDb pragmaSql with
   | .error e => pure (.error e)
   | .ok (none, _) => pure (.error (.misuse 21 "empty pragma SQL statement"))
@@ -38,8 +37,8 @@ def runSetupPragmaModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : C
       | .rejected e => pure (.error e)
 
 /-- Run post-`openV2` connection setup in the model. -/
-def setupConnectionModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m)
-    (path : String) (cfg : OpenConfig) (rawDb : RawDbHandle) : m (Except SqliteRawError Unit) := do
+def setupConnectionModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (path : String) (cfg : OpenConfig) (rawDb : UInt64) : m (Except SqliteRawError Unit) := do
   match ← cops.extendedResultCodes rawDb true with
   | .error e => pure (.error e)
   | .ok () =>
@@ -60,7 +59,7 @@ def setupConnectionModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : 
           pure (.ok ())
 
 /-- Bind a single `SqliteValue` at 1-based parameter index `paramIdx`. -/
-def bindOneParamModel {m : Type → Type} (cops : CSqliteOpsM m) (rawStmt : RawStmtHandle)
+def bindOneParamModel {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64) (rawStmt : UInt64)
     (paramIdx : UInt32) : SqliteValue → m (Except SqliteRawError Unit)
   | .null => cops.bindNull rawStmt paramIdx
   | .int v => cops.bindInt64 rawStmt paramIdx v
@@ -69,47 +68,47 @@ def bindOneParamModel {m : Type → Type} (cops : CSqliteOpsM m) (rawStmt : RawS
   | .bytes b => cops.bindBlob rawStmt paramIdx b
 
 /-- Bind all parameters in `params` (`1`-indexed in SQLite) sequentially. -/
-def bindLoopModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m) (rawStmt : RawStmtHandle)
+def bindLoopModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64) (rawStmt : UInt64)
     (params : Array SqliteValue) : Nat → m (Except SqliteError Unit)
   | 0 => pure (.ok ())
   | rem + 1 => do
     let idx := params.size - (rem + 1)
     let param := params.getD idx .null
     match ← bindOneParamModel cops rawStmt (UInt32.ofNat (idx + 1)) param with
-    | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+    | .error rawErr => pure (.error (mapRawError rawErr))
     | .ok () => bindLoopModel cops rawStmt params rem
 
 /-- Decode result columns `0 ..< total` (`rem` columns remaining) from `rawStmt`. -/
-def decodeColumnsModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) (total : Nat) :
+def decodeColumnsModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) (total : Nat) :
     Nat → Array SqliteValue → m (Except SqliteError (Array SqliteValue))
   | 0, acc => pure (.ok acc)
   | rem + 1, acc => do
     let colIdx := total - (rem + 1)
     let colU := UInt32.ofNat colIdx
     match ← cops.columnType rawStmt colU with
-    | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+    | .error rawErr => pure (.error (mapRawError rawErr))
     | .ok ty =>
       let valRes : Except SqliteError SqliteValue ←
         match ty.toNat with
         | 1 => do
           match ← cops.columnInt64 rawStmt colU with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok v => pure (.ok (.int v))
         | 2 => do
           match ← cops.columnDouble rawStmt colU with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok d => pure (.ok (.real d))
         | 3 => do
           match ← cops.columnTextBytes rawStmt colU with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok bs =>
             match String.fromUTF8? bs with
             | some s => pure (.ok (.text s))
-            | none => pure (.error (mapRawErrorModel (.userError "invalid UTF-8 in SQLite TEXT column")))
+            | none => pure (.error (mapRawError (.userError "invalid UTF-8 in SQLite TEXT column")))
         | 4 => do
           match ← cops.columnBlob rawStmt colU with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok bs => pure (.ok (.bytes bs))
         | _ => pure (.ok .null)
       match valRes with
@@ -117,33 +116,33 @@ def decodeColumnsModel {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
       | .ok val => decodeColumnsModel cops rawStmt total rem (acc.push val)
 
 /-- Run `act` under `cops.lockStmt stmt`, always releasing via `cops.unlockStmt stmt` when acquired. -/
-def withStmtLockModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m)
+def withStmtLockModel {m : Type → Type} [Monad m] [MonadFinally m] (cops : CSqliteOpsM m UInt64 UInt64)
     {α : Type} (stmt : StmtHandle) (act : m α) : m α := do
   let locked ← cops.lockStmt stmt
   let (res, _) ← tryFinally' act (fun _ => if locked then cops.unlockStmt stmt else pure ())
   pure res
 
-/-- Pure model specification of `RawSqliteOpsM m` built over `CSqliteOpsM m`. -/
+/-- Pure model specification of `RawSqliteOpsM m` built over `CSqliteOpsM m UInt64 UInt64`. -/
 def mkRawOpsModel {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) : RawSqliteOpsM m :=
-  { mapRawError := mapRawErrorModel
+    (cops : CSqliteOpsM m UInt64 UInt64) : RawSqliteOpsM m :=
+  { mapRawError := mapRawError
     openDb := fun path cfg => do
       let pathBytes := path.toUTF8
       if pathBytes.size == 0 then
-        pure (.error (mapRawErrorModel (.invalidArgument "database path must not be empty")))
+        pure (.error (mapRawError (.invalidArgument "database path must not be empty")))
       else if hasZeroByteBaModel pathBytes 0 then
-        pure (.error (mapRawErrorModel (.invalidArgument "database path contains embedded NUL byte")))
+        pure (.error (mapRawError (.invalidArgument "database path contains embedded NUL byte")))
       else if cfg.readOnly && cfg.createIfMissing then
-        pure (.error (mapRawErrorModel (.invalidArgument
+        pure (.error (mapRawError (.invalidArgument
           "cannot combine readOnly = true with createIfMissing = true")))
       else if cfg.busyTimeoutMs > maxBusyTimeoutMs then
-        pure (.error (mapRawErrorModel (.invalidArgument
+        pure (.error (mapRawError (.invalidArgument
           s!"busyTimeoutMs {cfg.busyTimeoutMs} exceeds maxBusyTimeoutMs ({maxBusyTimeoutMs})")))
       else
         let flags := computeOpenFlagsModel cfg
         match ← cops.openV2 path flags with
         | .error rawErr =>
-          pure (.error (mapRawErrorModel (attachOpenPathModel path rawErr)))
+          pure (.error (mapRawError (attachOpenPathModel path rawErr)))
         | .ok rawDb =>
           let (setupRes, _) ← tryFinally' (setupConnectionModel cops path cfg rawDb) fun
             | some (.ok ()) => pure ()
@@ -152,42 +151,42 @@ def mkRawOpsModel {m : Type → Type} [Monad m] [MonadFinally m]
               pure ()
           match setupRes with
           | .error rawErr =>
-            pure (.error (mapRawErrorModel (attachOpenPathModel path rawErr)))
+            pure (.error (mapRawError (attachOpenPathModel path rawErr)))
           | .ok () =>
             let db ← cops.modifyTable (tableInsertDb rawDb)
             pure (.ok db)
     closeDb := fun db => do
       let lookupRes ← cops.modifyTable (tableCheckCloseDb db.id)
       match lookupRes with
-      | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+      | .error rawErr => pure (.error (mapRawError rawErr))
       | .ok rawDb =>
         match ← cops.close rawDb with
-        | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+        | .error rawErr => pure (.error (mapRawError rawErr))
         | .ok () =>
           cops.modifyTable (tableEraseDb db.id)
           pure (.ok ())
     prepare := fun db sql => do
       if sql.utf8ByteSize > maxSqlByteLen then
-        pure (.error (mapRawErrorModel (.invalidArgument "SQL statement exceeds maximum byte length")))
+        pure (.error (mapRawError (.invalidArgument "SQL statement exceeds maximum byte length")))
       else
         let sqlBytes := sql.toUTF8
         if hasZeroByteBaModel sqlBytes 0 then
-          pure (.error (mapRawErrorModel (.invalidArgument "SQL string contains embedded NUL byte")))
+          pure (.error (mapRawError (.invalidArgument "SQL string contains embedded NUL byte")))
         else
           let rawDb? ← cops.modifyTable (tableLookupDb db.id)
           match rawDb? with
-          | none => pure (.error (mapRawErrorModel (.misuse 21 "invalid or closed database handle")))
+          | none => pure (.error (mapRawError (.misuse 21 "invalid or closed database handle")))
           | some rawDb =>
             match ← cops.prepareV2 rawDb sql with
-            | .error rawErr => pure (.error (mapRawErrorModel rawErr))
-            | .ok (none, _) => pure (.error (mapRawErrorModel (.misuse 21 "empty SQL statement")))
+            | .error rawErr => pure (.error (mapRawError rawErr))
+            | .ok (none, _) => pure (.error (mapRawError (.misuse 21 "empty SQL statement")))
             | .ok (some rawStmt, consumedByteLen) =>
               let totalBytes := sqlBytes.size
               let tailOk := consumedByteLen ≤ totalBytes &&
                 scanSqlTailBaModel .normal sqlBytes consumedByteLen
               if !tailOk then
                 let _ ← cops.finalize rawStmt
-                pure (.error (mapRawErrorModel (.misuse 21
+                pure (.error (mapRawError (.misuse 21
                   "multiple SQL statements are not allowed in prepare")))
               else
                 let sh ← cops.modifyTable (tableInsertStmt db.id rawStmt)
@@ -196,19 +195,19 @@ def mkRawOpsModel {m : Type → Type} [Monad m] [MonadFinally m]
       withStmtLockModel cops stmt do
         let rawStmt? ← cops.modifyTable (tableLookupStmt stmt)
         match rawStmt? with
-        | none => pure (.error (mapRawErrorModel (.misuse 21 "invalid or finalized statement handle")))
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
         | some rawStmt =>
           match ← cops.reset rawStmt with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok () =>
             match ← cops.clearBindings rawStmt with
-            | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+            | .error rawErr => pure (.error (mapRawError rawErr))
             | .ok () =>
               match ← cops.bindParamCount rawStmt with
-              | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+              | .error rawErr => pure (.error (mapRawError rawErr))
               | .ok expectedCount =>
                 if params.size != expectedCount.toNat then
-                  pure (.error (mapRawErrorModel (.invalidArgument
+                  pure (.error (mapRawError (.invalidArgument
                     s!"parameter count mismatch: expected {expectedCount}, got {params.size}")))
                 else
                   bindLoopModel cops rawStmt params params.size
@@ -216,14 +215,14 @@ def mkRawOpsModel {m : Type → Type} [Monad m] [MonadFinally m]
       withStmtLockModel cops stmt do
         let rawStmt? ← cops.modifyTable (tableLookupStmt stmt)
         match rawStmt? with
-        | none => pure (.error (mapRawErrorModel (.misuse 21 "invalid or finalized statement handle")))
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or finalized statement handle")))
         | some rawStmt =>
           match ← cops.step rawStmt with
-          | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+          | .error rawErr => pure (.error (mapRawError rawErr))
           | .ok .done => pure (.ok .done)
           | .ok .row =>
             match ← cops.columnCount rawStmt with
-            | .error rawErr => pure (.error (mapRawErrorModel rawErr))
+            | .error rawErr => pure (.error (mapRawError rawErr))
             | .ok cnt =>
               let colsRes ← decodeColumnsModel cops rawStmt cnt.toNat cnt.toNat #[]
               match colsRes with
@@ -233,16 +232,16 @@ def mkRawOpsModel {m : Type → Type} [Monad m] [MonadFinally m]
       withStmtLockModel cops stmt do
         let rawStmt? ← cops.modifyTable (tableLookupStmt stmt)
         match rawStmt? with
-        | none => pure (.error (mapRawErrorModel (.misuse 21 "invalid or already finalized statement handle")))
+        | none => pure (.error (mapRawError (.misuse 21 "invalid or already finalized statement handle")))
         | some rawStmt =>
           match ← cops.finalize rawStmt with
           | .finalized stickyErr? =>
             cops.modifyTable (tableEraseStmt stmt)
             match stickyErr? with
             | none => pure (.ok ())
-            | some rawErr => pure (.error (mapRawErrorModel rawErr))
+            | some rawErr => pure (.error (mapRawError rawErr))
           | .rejected rawErr =>
-            pure (.error (mapRawErrorModel rawErr))
+            pure (.error (mapRawError rawErr))
     activeDbCount := cops.modifyTable tableActiveDbCount
     activeStmtCount := cops.modifyTable tableActiveStmtCount }
 
@@ -257,7 +256,7 @@ inductive CStepReq where
   /-- Read active statement count from `RawHandleTable`. -/
   | tableActiveStmtCount
   /-- Allocate a new `DbHandle` in `RawHandleTable`. -/
-  | tableInsertDb (rawDb : RawDbHandle)
+  | tableInsertDb (rawDb : UInt64)
   /-- Validate `dbId` prior to `closeDb`. -/
   | tableCheckCloseDb (dbId : UInt64)
   /-- Erase closed `dbId` from `RawHandleTable`. -/
@@ -265,7 +264,7 @@ inductive CStepReq where
   /-- Look up `dbId` in `RawHandleTable`. -/
   | tableLookupDb (dbId : UInt64)
   /-- Allocate a new `StmtHandle` on `dbId` in `RawHandleTable`. -/
-  | tableInsertStmt (dbId : UInt64) (rawStmt : RawStmtHandle)
+  | tableInsertStmt (dbId : UInt64) (rawStmt : UInt64)
   /-- Look up `stmt` in `RawHandleTable`. -/
   | tableLookupStmt (stmt : StmtHandle)
   /-- Erase finalized `stmt` from `RawHandleTable`. -/
@@ -273,45 +272,45 @@ inductive CStepReq where
   /-- Thin `sqlite3_open_v2(path, flags)`. -/
   | openV2 (path : String) (flags : UInt32)
   /-- Thin `sqlite3_close(rawDb)`. -/
-  | close (rawDb : RawDbHandle)
+  | close (rawDb : UInt64)
   /-- Thin `sqlite3_extended_result_codes(rawDb, onoff)`. -/
-  | extendedResultCodes (rawDb : RawDbHandle) (onoff : Bool)
+  | extendedResultCodes (rawDb : UInt64) (onoff : Bool)
   /-- Thin `sqlite3_busy_timeout(rawDb, ms)`. -/
-  | busyTimeout (rawDb : RawDbHandle) (ms : UInt32)
+  | busyTimeout (rawDb : UInt64) (ms : UInt32)
   /-- Thin `sqlite3_prepare_v2(rawDb, sql)`. -/
-  | prepareV2 (rawDb : RawDbHandle) (sql : String)
+  | prepareV2 (rawDb : UInt64) (sql : String)
   /-- Thin `sqlite3_step(rawStmt)`. -/
-  | step (rawStmt : RawStmtHandle)
+  | step (rawStmt : UInt64)
   /-- Thin `sqlite3_reset(rawStmt)`. -/
-  | reset (rawStmt : RawStmtHandle)
+  | reset (rawStmt : UInt64)
   /-- Thin `sqlite3_clear_bindings(rawStmt)`. -/
-  | clearBindings (rawStmt : RawStmtHandle)
+  | clearBindings (rawStmt : UInt64)
   /-- Thin `sqlite3_finalize(rawStmt)`. -/
-  | finalize (rawStmt : RawStmtHandle)
+  | finalize (rawStmt : UInt64)
   /-- Thin `sqlite3_bind_parameter_count(rawStmt)`. -/
-  | bindParamCount (rawStmt : RawStmtHandle)
+  | bindParamCount (rawStmt : UInt64)
   /-- Thin `sqlite3_bind_null(rawStmt, idx)`. -/
-  | bindNull (rawStmt : RawStmtHandle) (idx : UInt32)
+  | bindNull (rawStmt : UInt64) (idx : UInt32)
   /-- Thin `sqlite3_bind_int64(rawStmt, idx, val)`. -/
-  | bindInt64 (rawStmt : RawStmtHandle) (idx : UInt32) (val : Int64)
+  | bindInt64 (rawStmt : UInt64) (idx : UInt32) (val : Int64)
   /-- Thin `sqlite3_bind_double(rawStmt, idx, val)`. -/
-  | bindDouble (rawStmt : RawStmtHandle) (idx : UInt32) (val : Float)
+  | bindDouble (rawStmt : UInt64) (idx : UInt32) (val : Float)
   /-- Thin `sqlite3_bind_text64(rawStmt, idx, val)`. -/
-  | bindText (rawStmt : RawStmtHandle) (idx : UInt32) (val : String)
+  | bindText (rawStmt : UInt64) (idx : UInt32) (val : String)
   /-- Thin `sqlite3_bind_blob64(rawStmt, idx, val)`. -/
-  | bindBlob (rawStmt : RawStmtHandle) (idx : UInt32) (val : ByteArray)
+  | bindBlob (rawStmt : UInt64) (idx : UInt32) (val : ByteArray)
   /-- Thin `sqlite3_column_count(rawStmt)`. -/
-  | columnCount (rawStmt : RawStmtHandle)
+  | columnCount (rawStmt : UInt64)
   /-- Thin `sqlite3_column_type(rawStmt, col)`. -/
-  | columnType (rawStmt : RawStmtHandle) (col : UInt32)
+  | columnType (rawStmt : UInt64) (col : UInt32)
   /-- Thin `sqlite3_column_int64(rawStmt, col)`. -/
-  | columnInt64 (rawStmt : RawStmtHandle) (col : UInt32)
+  | columnInt64 (rawStmt : UInt64) (col : UInt32)
   /-- Thin `sqlite3_column_double(rawStmt, col)`. -/
-  | columnDouble (rawStmt : RawStmtHandle) (col : UInt32)
+  | columnDouble (rawStmt : UInt64) (col : UInt32)
   /-- Thin `sqlite3_column_text_bytes(rawStmt, col)`. -/
-  | columnTextBytes (rawStmt : RawStmtHandle) (col : UInt32)
+  | columnTextBytes (rawStmt : UInt64) (col : UInt32)
   /-- Thin `sqlite3_column_blob(rawStmt, col)`. -/
-  | columnBlob (rawStmt : RawStmtHandle) (col : UInt32)
+  | columnBlob (rawStmt : UInt64) (col : UInt32)
   /-- Acquire per-statement lock for `stmt`. -/
   | lockStmt (stmt : StmtHandle)
   /-- Release per-statement lock for `stmt`. -/
@@ -326,20 +325,20 @@ inductive CStepOut where
   | boolRes (b : Bool)
   /-- Allocated `DbHandle` from `tableInsertDb`. -/
   | dbHandle (db : DbHandle)
-  /-- Validated `RawDbHandle` or raw error from `tableCheckCloseDb` or `openV2`. -/
-  | rawDbRes (res : Except SqliteRawError RawDbHandle)
+  /-- Validated `UInt64` or raw error from `tableCheckCloseDb` or `openV2`. -/
+  | rawDbRes (res : Except SqliteRawError UInt64)
   /-- Unit table update result from `tableEraseDb` or `tableEraseStmt`. -/
   | tableUnit
-  /-- Optional `RawDbHandle` from `tableLookupDb`. -/
-  | rawDbOpt (res : Option RawDbHandle)
+  /-- Optional `UInt64` from `tableLookupDb`. -/
+  | rawDbOpt (res : Option UInt64)
   /-- Allocated `StmtHandle` from `tableInsertStmt`. -/
   | stmtHandle (sh : StmtHandle)
-  /-- Optional `RawStmtHandle` from `tableLookupStmt`. -/
-  | rawStmtOpt (res : Option RawStmtHandle)
+  /-- Optional `UInt64` from `tableLookupStmt`. -/
+  | rawStmtOpt (res : Option UInt64)
   /-- Fallible `Unit` result from `close`, `extendedResultCodes`, `busyTimeout`, `reset`, `clearBindings`, or `bind*`. -/
   | unitRes (res : Except SqliteRawError Unit)
   /-- Fallible `(stmt?, consumedByteLen)` result from `prepareV2`. -/
-  | prepRes (res : Except SqliteRawError (Option RawStmtHandle × Nat))
+  | prepRes (res : Except SqliteRawError (Option UInt64 × Nat))
   /-- Fallible `RawStepTag` result from `step`. -/
   | stepTagRes (res : Except SqliteRawError RawStepTag)
   /-- `RawFinalizeResult` from `finalize`. -/
@@ -354,8 +353,8 @@ inductive CStepOut where
   | bytesRes (res : Except SqliteRawError ByteArray)
   deriving Inhabited
 
-/-- Execute one `CStepReq` against an arbitrary `CSqliteOpsM (StateM W)`. -/
-def execCStep {W : Type} (cops : CSqliteOpsM (StateM W)) : CStepReq → StateM W CStepOut
+/-- Execute one `CStepReq` against an arbitrary `CSqliteOpsM (StateM W) UInt64 UInt64`. -/
+def execCStep {W : Type} (cops : CSqliteOpsM (StateM W) UInt64 UInt64) : CStepReq → StateM W CStepOut
   | .tableActiveDbCount => .count <$> cops.modifyTable tableActiveDbCount
   | .tableActiveStmtCount => .count <$> cops.modifyTable tableActiveStmtCount
   | .tableInsertDb rawDb => .dbHandle <$> cops.modifyTable (tableInsertDb rawDb)
@@ -393,7 +392,7 @@ def execCStep {W : Type} (cops : CSqliteOpsM (StateM W)) : CStepReq → StateM W
 def cStepWf (_ : SqliteRawState) : Bool := true
 
 /-- Well-formedness guard on `SqliteRawState` for `RawSqliteOpsM` transitions requiring balanced statement locks. -/
-def rawStepWf (s : SqliteRawState) : Bool := s.heldStmtLocks.isEmpty
+def rawOpsStepWf (s : SqliteRawState) : Bool := s.heldStmtLocks.isEmpty
 
 /-- Allowed single-step transition relation for `CSqliteOpsM` over `SqliteRawState`. -/
 def allowedCStep (s : SqliteRawState) (req : CStepReq) (out : CStepOut)
@@ -401,15 +400,11 @@ def allowedCStep (s : SqliteRawState) (req : CStepReq) (out : CStepOut)
   let r := (execCStep modelCSqliteOps req).run s
   out = r.1 ∧ s' = r.2
 
-/-- Execute one `RawStepReq` against an arbitrary `RawSqliteOpsM (StateM W)`. -/
-abbrev execPkgStep {W : Type} (ops : RawSqliteOpsM (StateM W)) : RawStepReq → StateM W RawStepOut :=
-  execRawStep ops
-
 /-- Allowed single-step transition relation for `RawSqliteOpsM` over `SqliteRawState`,
-    enforcing deterministic output/state refinement and balanced statement-lock release (`rawStepWf s' = true`). -/
-def allowedPkgStep (s : SqliteRawState) (req : RawStepReq) (out : RawStepOut)
+    enforcing deterministic output/state refinement and balanced statement-lock release (`rawOpsStepWf s' = true`). -/
+def allowedRawOpsStep (s : SqliteRawState) (req : RawStepReq) (out : RawStepOut)
     (s' : SqliteRawState) : Prop :=
   let r := (execRawStep modelRawSqliteOps req).run s
-  out = r.1 ∧ s' = r.2 ∧ rawStepWf s' = true
+  out = r.1 ∧ s' = r.2 ∧ rawOpsStepWf s' = true
 
-end LeanSwe.Sqlite.Raw.Model
+end LeanSwe.Sqlite.Model
