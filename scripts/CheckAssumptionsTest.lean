@@ -4354,6 +4354,16 @@ def main (_ : List String) : IO UInt32 := do
     expectFailureCode bin "inconclusive_dead_branch_fails_closed" "INCONCLUSIVE_DEAD_BRANCH_CHECK"
       base.libDir base.root #["--dead-branch-fuel", "0"]
 
+    runPositiveCase base tmpRoot bin "retired_tests_main_ignores_stale_olean" fun mr => do
+      IO.FS.removeFile (mr.root / "harness/Tests/Main.lean")
+      IO.FS.writeFile (mr.root / "harness/.lake/build/lib/lean/Tests/Main.olean") "stale-not-an-olean"
+      return #[]
+
+    runPositiveCase base tmpRoot bin "retired_tests_main_absent_ok" fun mr => do
+      IO.FS.removeDirAll (mr.root / "harness/Tests")
+      IO.FS.removeDirAll (mr.root / "harness/.lake/build/lib/lean/Tests")
+      return #[]
+
     runCentralCoverageSelfTests base tmpRoot bin
     runHarnessParitySelfTests tmpRoot realRepo
     runImportDagSelfTests tmpRoot realRepo realLib

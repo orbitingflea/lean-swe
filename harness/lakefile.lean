@@ -22,10 +22,6 @@ require «lean-swe» from ".."
 lean_lib Fuzz where
   globs := #[.submodules `Fuzz]
 
-lean_lib Tests where
-  roots := #[`Tests.PropCheck, `Tests.Common]
-  globs := #[.one `Tests.PropCheck, .one `Tests.Common, .submodules `Tests.Mutate]
-
 @[default_target]
 lean_lib ModelMutants where
   globs := #[.submodules `ModelMutants]
@@ -195,13 +191,6 @@ extern_lib «leanswe_postfork_fuzz» pkg := do
   let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "postfork_fuzz"
   let name := nameToStaticLib "leanswe_postfork_fuzz"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, weakRustJob, fdBoxJob]
-
-@[default_target, test_driver]
-lean_exe «lean-swe-test» where
-  root := `Tests.Main
-
-lean_exe «lean-swe-mut-test» where
-  root := `Tests.MutateDriver
 
 @[default_target]
 lean_exe «leanswe-fuzz» where

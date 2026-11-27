@@ -3995,7 +3995,12 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir}"
     return 1
   let harnessLibDir := repoDir / "harness" / ".lake" / "build" / "lib" / "lean"
-  let hasTestsMainOlean ← (harnessLibDir / "Tests" / "Main.olean").pathExists
+  let hasTestsMainSrc ← (repoDir / "harness" / "Tests" / "Main.lean").pathExists
+  let hasTestsMainOlean ←
+    if hasTestsMainSrc then
+      (harnessLibDir / "Tests" / "Main.olean").pathExists
+    else
+      pure false
   let hasPostForkVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
   if hasPostForkVerifiedSrc then
     unless ← (libDir / "LeanSwe" / "PostFork" / "Verified.olean").pathExists do

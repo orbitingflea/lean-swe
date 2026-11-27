@@ -56,7 +56,7 @@ private def bytesToHex (ba : ByteArray) : String := Id.run do
     out := out.push (ch lo)
   return out
 
-/-- Child-process probe helper dispatched for `--passwd-probe` by `leanswe-fuzz` and `lean-swe-mut-test`, printing raw hex `pw_dir` for `uid` under overridden environment variables (e.g. `HOME=/tmp`). -/
+/-- Child-process probe helper dispatched for `--passwd-probe` by `leanswe-fuzz`, printing raw hex `pw_dir` for `uid` under overridden environment variables (e.g. `HOME=/tmp`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [uidStr] =>

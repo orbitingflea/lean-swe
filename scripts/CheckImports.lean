@@ -15,7 +15,7 @@ import policy across every `.lean` file in the repository without requiring comp
 3. Rejects misplaced `import` / `private import` directives immediately after the parsed
    header (including after leading module/doc comments).
 4. Rejects `import all` targeting any module whose root is outside the intra-repo roots
-   (`Core`, `LeanSwe`, `Fuzz`, `Tests`), including French-quoted single-segment names
+   (`Core`, `LeanSwe`, `Fuzz`, `ModelMutants`), including French-quoted single-segment names
    such as `import all «LeanSwe.Foo»`.
 5. Rejects bare umbrella imports (`import Mathlib`, `import «Mathlib»`,
    `public import Mathlib`, `meta import Mathlib`, etc.); specific submodules such as
@@ -29,7 +29,7 @@ Usage:
 open Lean
 
 private def internalImportRoots : Array String :=
-  #["Core", "LeanSwe", "Fuzz", "Tests", "ModelMutants"]
+  #["Core", "LeanSwe", "Fuzz", "ModelMutants"]
 
 private def forbiddenUmbrellaImports : Array String :=
   #["Mathlib"]
@@ -40,7 +40,7 @@ private def isInternalImportRoot (mod : Name) : Bool :=
   | .str .anonymous rootSeg =>
     !rootSeg.contains '.' &&
     internalImportRoots.contains rootSeg &&
-    (root == `Core || root == `LeanSwe || root == `Fuzz || root == `Tests || root == `ModelMutants)
+    (root == `Core || root == `LeanSwe || root == `Fuzz || root == `ModelMutants)
   | _ => false
 
 private def isForbiddenUmbrellaImport (mod : Name) : Bool :=
@@ -235,7 +235,7 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
     let modStr := imp.module.toString
     if imp.importAll && !isInternalImportRoot imp.module then
       violations := violations.push
-        s!"{relPath}:{lineNo}: disallowed external 'import all {modStr}' (only intra-repo modules under Core/LeanSwe/Fuzz/Tests may use 'import all')"
+        s!"{relPath}:{lineNo}: disallowed external 'import all {modStr}' (only intra-repo modules under Core/LeanSwe/Fuzz/ModelMutants may use 'import all')"
     if isForbiddenUmbrellaImport imp.module then
       violations := violations.push
         s!"{relPath}:{lineNo}: disallowed umbrella import '{modStr}' (import specific submodule(s) instead, e.g. 'Mathlib.Data.Nat.Basic')"
@@ -544,6 +544,7 @@ private def runSelfTests : IO UInt32 := do
     ("leanswe_extra", "module\nimport all LeanSweExtra.Foo\n", "LeanSweExtra.Foo"),
     ("core_extra", "module\nimport all CoreExtra\n", "CoreExtra"),
     ("fuzz_extra", "module\nimport all FuzzExtra.Suite\n", "FuzzExtra.Suite"),
+    ("tests_retired", "module\nimport all Tests.Main\n", "Tests.Main"),
     ("tests_extra", "module\nimport all TestsExtra.Main\n", "TestsExtra.Main"),
     ("quoted_leanswe_dot", "module\nimport all «LeanSwe.Foo»\n", "«LeanSwe.Foo»"),
     ("quoted_leanswe_dot_sub", "module\nimport all «LeanSwe.Foo».Bar\n", "«LeanSwe.Foo».Bar"),
@@ -766,17 +767,15 @@ private def runSelfTests : IO UInt32 := do
     "import all\n  -- multiline intra-repo import all\n  LeanSwe.Bar.Impl",
     "import all Core.NondetTest",
     "import all Fuzz.Common.Rng",
-    "import all Tests.Main",
     "import all LeanSwe",
     "import all Core",
     "import all Fuzz",
-    "import all Tests",
     "import all «LeanSwe»",
     "private def hidden : Nat := 1",
     "public def shown : Nat := 2"
   ]
   let (modCount, modErrs) ← checkSourceText "Ok.lean" allowedModule
-  assertTrue "allowed_module" (modErrs.isEmpty && modCount == 32)
+  assertTrue "allowed_module" (modErrs.isEmpty && modCount == 30)
     s!"count={modCount} errs={modErrs}"
   checks := checks + 1
 

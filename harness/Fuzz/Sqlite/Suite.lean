@@ -1,5 +1,6 @@
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.Raw.Interface
+import LeanSwe.Sqlite.Raw.SpecTests
 import LeanSwe.Sqlite.Model
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
@@ -2326,8 +2327,37 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
   if dbs != 0 || stmts != 0 then
     throw (IO.userError s!"SQLITE_RAW_PROBE_LEAK dbs={dbs} stmts={stmts}")
 
+private def runMockedRawErrorProbes : IO Unit := do
+  let ops := Raw.Internal.mkRawOps Raw.mockCOps
+  let rawErrs : Array (SqliteErrorKind × Raw.SqliteRawError) := #[
+    (.notFound, .cantOpen (some "mock.db") 14 "mock notFound"),
+    (.busy, .busy 5 "mock busy"),
+    (.constraint, .constraint 19 "mock constraint"),
+    (.misuse, .misuse 21 "mock misuse"),
+    (.invalidInput, .invalidArgument "mock invalidInput"),
+    (.ioError, .ioFailure 10 "mock ioError")
+  ]
+  let check {α : Type} (opName : String) (expected : SqliteErrorKind) (res : Except SqliteError α) : IO Unit := do
+    match res with
+    | .error e =>
+      if e.kind != expected || e.message.isEmpty then
+        throw (IO.userError s!"SQLITE_MOCK_PROBE_MISMATCH: {opName} expected {repr expected}, got {repr e}")
+      Fuzz.Common.logErrHit s!"LeanSwe.Sqlite.Raw.{opName}"
+        s!"LeanSwe.Sqlite.Raw.SqliteErrorKind.{errKindTag e.kind}" "mocked"
+    | .ok _ =>
+      throw (IO.userError s!"SQLITE_MOCK_PROBE_UNEXPECTED_OK: {opName} expected {repr expected}")
+  let stmtHandle : Raw.StmtHandle := { id := 1, dbId := 1 }
+  for (expected, rawErr) in rawErrs do
+    check "openDb" expected ((ops.openDb "app.db" {}).run { failStep := .openV2 rawErr }).1
+    check "closeDb" expected ((ops.closeDb { id := 1 }).run (Raw.mockStateWithOpenDb (.close rawErr))).1
+    check "prepare" expected ((ops.prepare { id := 1 } "SELECT 1").run (Raw.mockStateWithOpenDb (.prepareV2At 0 rawErr))).1
+    check "bind" expected ((ops.bind stmtHandle #[.int 1]).run (Raw.mockStateWithOpenStmt 1 [] #[] (.bindAt 1 rawErr))).1
+    check "step" expected ((ops.step stmtHandle).run (Raw.mockStateWithOpenStmt 0 [] #[] (.stepAt 0 rawErr))).1
+    check "finalize" expected ((ops.finalize stmtHandle).run (Raw.mockStateWithOpenStmt 0 [] #[] (.finalizeResult (.finalized (some rawErr))))).1
+
 private def runWarmup (tpl : EpisodeTemplate) (rootDir : System.FilePath) (attemptRef : IO.Ref Nat)
     (tracker : CoverageTracker) : IO (CoverageTracker × Nat) := do
+  runMockedRawErrorProbes
   runRawApiProbe rootDir
   let mut tr := tracker
   let mut totalOps := 0

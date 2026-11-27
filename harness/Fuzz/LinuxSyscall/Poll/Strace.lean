@@ -354,7 +354,7 @@ private def runFdBoxAndErrorKindTests : IO Unit := do
   for (code, wantKind) in errPairs do
     assertTrue s!"PollErrorKind.ofErrno {code}" (PollErrorKind.ofErrno code == wantKind)
 
-/-- Run all `Poll` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `Poll` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   assume_poll_ppoll_fdPinTimespecAndEventsAbi
   assume_poll_eventfd2_flagsAndInitvalAbi
@@ -451,7 +451,7 @@ def runStraceFaultCheck : IO Unit := do
     straceInjectSpec s!"ppoll:error={errName}" "--poll-strace-worker" errName
     straceInjectSpec s!"eventfd2:error={errName}:when=2+" "--poll-strace-efd-worker" errName
 
-/-- Handle `--poll-strace-fault-check` and worker subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
+/-- Handle `--poll-strace-fault-check` and worker subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>

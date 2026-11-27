@@ -3348,7 +3348,7 @@ private def runUdpWildcardPeerResolveTests : IO Unit := do
   let _ ← mustStep "mc.recv1" sMcTx (.recvfrom 1 8 { dontwait := true }) (.bytes (asciiBytes ['c']))
   mustReject "mc.send0 rejects ECONNREFUSED" sMcTx (.sendto 0 ByteArray.empty {}) (.err Errno.ECONNREFUSED)
 
-/-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `Net` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   assume_net_socket_domainTypeFlagsAbi
   assume_net_socketpair_unixPairAbi
@@ -3680,7 +3680,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"net strace {syscallName} {errName} failed (exit={out.exitCode}): {out.stderr}")
 
-/-- Handle `--net-strace-fault-check` and `--net-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
+/-- Handle `--net-strace-fault-check` and `--net-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>

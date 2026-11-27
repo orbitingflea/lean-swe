@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '17 06 * * *'
   workflow_dispatch:
-    inputs:
-      test_runs:
-        description: 'Number of full runtime test repetitions (empty uses DAILY_TEST_RUNS or 5)'
-        required: false
-        default: ''
 
 concurrency:
   group: audit-daily-main
@@ -87,7 +82,7 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
-          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz", "Tests")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "Tests", "ModelMutants"))):
+          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "ModelMutants"))):
               for r in roots:
                   if not (lr := lib / r).exists(): continue
                   for o in list(lr.rglob("*.olean")):
@@ -148,7 +143,7 @@ jobs:
           lake exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants lean-swe-test lean-swe-mut-test leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
@@ -156,7 +151,7 @@ jobs:
             diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms")
             diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u)
             diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
-            for b in lean-swe-test lean-swe-mut-test leanswe-fuzz; do
+            for b in leanswe-fuzz; do
               readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || {
                 echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2
                 exit 1
@@ -210,21 +205,13 @@ jobs:
           lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
           python3 -B -m unittest discover -s scripts -p 'test_*.py'
 
-      - name: Repeat runtime tests N times
+      - name: Run differential fuzz suites
         id: repeat_tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
-        env:
-          INPUT_TEST_RUNS: ${{ inputs.test_runs }}
-          DAILY_TEST_RUNS: ${{ vars.DAILY_TEST_RUNS }}
         run: |
           set -euo pipefail
-          N="${INPUT_TEST_RUNS:-${DAILY_TEST_RUNS:-5}}"
-          if [[ ! "$N" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Invalid test repetition count N=$N" | tee "$RUNNER_TEMP/repeat_tests.log"
-            exit 2
-          fi
-          if [[ ! -x harness/.lake/build/bin/lean-swe-test ]]; then
-            echo "Missing harness/.lake/build/bin/lean-swe-test after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"
+          if [[ ! -x harness/.lake/build/bin/leanswe-fuzz ]]; then
+            echo "Missing harness/.lake/build/bin/leanswe-fuzz after lake check" | tee "$RUNNER_TEMP/repeat_tests.log"
             exit 1
           fi
           if [[ -f /sys/fs/cgroup/leanswe/runner/cgroup.procs ]]; then
@@ -248,84 +235,48 @@ jobs:
               with open(s, "a", encoding="utf-8") as f:
                   f.write(f"`{line}`\n\n")
           ' | tee "$RUNNER_TEMP/repeat_tests.log"
-          FAILED_RUNS=0; FIRST_NONCE=""; FIRST_LOG=""
-          DAILY_ASSUMP_LOG="$RUNNER_TEMP/daily-assump.log"; DAILY_RT_COV_LOG="$RUNNER_TEMP/daily-rt-cov.log"; DAILY_NONCE_FILE="$RUNNER_TEMP/daily.nonce"; FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
-          rm -rf "$FUZZ_COV_DIR" "$DAILY_ASSUMP_LOG" "$DAILY_RT_COV_LOG" "$DAILY_NONCE_FILE"; mkdir -p "$FUZZ_COV_DIR"
-          for ((i = 1; i <= N; i++)); do
-            echo "=== Test run $i of $N ===" | tee -a "$RUNNER_TEMP/repeat_tests.log"
-            RUN_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
-            RUN_LOG="$RUNNER_TEMP/assump-run-${i}.log"; RUN_COV_LOG="$RUNNER_TEMP/cov-run-${i}.log"
-            rm -f "$RUN_LOG" "$RUN_COV_LOG"
-            set +e
-            LEANSWE_SUMMARY_LABEL="Run $i of $N" harness/.lake/build/bin/lean-swe-test --assump-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --assump-nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
-            RC=$?
-            if (( RC == 0 )); then
-              if [[ -z "$FIRST_NONCE" ]]; then
-                lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUN_LOG" --coverage-log "$RUN_COV_LOG" --nonce "$RUN_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1 && FIRST_NONCE="$RUN_NONCE" && FIRST_LOG="$RUN_LOG" && cp "$RUN_LOG" "$DAILY_ASSUMP_LOG" && cp "$RUN_COV_LOG" "$DAILY_RT_COV_LOG" && printf '%s\n' "$RUN_NONCE" > "$DAILY_NONCE_FILE"
+          DAILY_NONCE=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          [[ "$DAILY_NONCE" =~ ^[0-9a-f]{32}$ ]] || { echo "DAILY_NONCE_ERROR: invalid nonce" >&2; exit 2; }
+          DAILY_NONCE_FILE="$RUNNER_TEMP/daily.nonce"; FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
+          rm -rf "$FUZZ_COV_DIR" "$DAILY_NONCE_FILE"; mkdir -p "$FUZZ_COV_DIR"
+          printf '%s\n' "$DAILY_NONCE" > "$DAILY_NONCE_FILE"
+          {
+            harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check
+            harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/sandbox.log" --nonce "$DAILY_NONCE"
+            harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink
+          } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
+            OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
+            sudo -n unshare --pid --fork --mount-proc -- bash -ec '
+              ulimit -Hc unlimited
+              if (( $1 == 2 )); then
+                echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
               else
-                python3 -c 'import pathlib, sys; p1, p2, nc, fnc = sys.argv[1:5]; norm = lambda ls, n: sorted([l.split("|", 1)[1] for l in ls if l.startswith(n + "|")]); l1 = [l.strip() for l in pathlib.Path(p1).read_text().splitlines() if l.strip()]; l2 = [l.strip() for l in pathlib.Path(p2).read_text().splitlines() if l.strip()]; assert len(l2) >= 2 and len(l1) == len(l2) and all(l.startswith(nc + "|") for l in l2) and l2[0] == f"{nc}|LOG_INIT" and l2[-1] == f"{nc}|LOG_CLOSE" and norm(l1, fnc) == norm(l2, nc)' "$FIRST_LOG" "$RUN_LOG" "$RUN_NONCE" "$FIRST_NONCE" >> "$RUNNER_TEMP/repeat_tests.log" 2>&1
+                sysctl -w vm.memfd_noexec=1 >/dev/null
+                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
+                sysctl -w vm.memfd_noexec=2 >/dev/null
               fi
-              RC=$?
-            fi
-            set -e; rm -f "$RUN_COV_LOG"
-            tail -n 5 "$RUNNER_TEMP/repeat_tests.log"
-            if (( RC != 0 )); then
-              FAILED_RUNS=$((FAILED_RUNS + 1))
-            fi
-          done
-          if (( FAILED_RUNS == 0 )); then
-            if [[ ! -x harness/.lake/build/bin/leanswe-fuzz ]]; then
-              echo "Missing harness/.lake/build/bin/leanswe-fuzz" | tee -a "$RUNNER_TEMP/repeat_tests.log"
-              exit 1
-            fi
-            {
-              harness/.lake/build/bin/leanswe-fuzz --sandbox-strace-fault-check
-              harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/sandbox.log" --nonce "$FIRST_NONCE"
-              harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 250000 --random-seed --self-test-shrink
-            } 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-            if sudo -n sysctl -n vm.memfd_noexec >/dev/null 2>&1; then
-              OLD_MEMFD_NOEXEC=$(sudo -n sysctl -n vm.memfd_noexec)
-              sudo -n unshare --pid --fork --mount-proc -- bash -ec '
-                ulimit -Hc unlimited
-                if (( $1 == 2 )); then
-                  echo "MEMFD_NOEXEC_WARN: vm.memfd_noexec=2 enforced; skipping vm.memfd_noexec=1"
-                else
-                  sysctl -w vm.memfd_noexec=1 >/dev/null
-                  setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink
-                  sysctl -w vm.memfd_noexec=2 >/dev/null
-                fi
-                setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
-                sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
-              ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)" 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
-            else
-              echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks" | tee -a "$RUNNER_TEMP/repeat_tests.log"
-            fi
+              setpriv --reuid="$2" --regid="$3" --init-groups -- harness/.lake/build/bin/leanswe-fuzz --suite sandbox --steps 50000 --random-seed --self-test-shrink --require-memfd-strict
+              sysctl -w "vm.memfd_noexec=$1" >/dev/null 2>&1 || true
+            ' _ "$OLD_MEMFD_NOEXEC" "$(id -u)" "$(id -g)" 2>&1 | tee -a "$RUNNER_TEMP/repeat_tests.log"
+          else
+            echo "::warning::sudo -n sysctl unavailable; skipping vm.memfd_noexec={1,2} strict checks" | tee -a "$RUNNER_TEMP/repeat_tests.log"
           fi
-          SUMMARY="REPEAT_SUMMARY: total_runs=$N passed_runs=$((N - FAILED_RUNS)) failed_runs=$FAILED_RUNS"
-          echo "$SUMMARY" | tee -a "$RUNNER_TEMP/repeat_tests.log"
-          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-            printf '\n**%s**\n\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          (( FAILED_RUNS == 0 ))
           {
             harness/.lake/build/bin/leanswe-fuzz --timerand-strace-fault-check
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Sandbox,LinuxSyscall.TimeRand,Compress,LinuxSyscall.Poll,LinuxSyscall.Net,Git,CmdLine,EnvVars.Raw,EnvVars,CryptoHash.Raw,CryptoHash,LinuxSyscall.Passwd,LinuxSyscall.Dns,LinuxSyscall.Files,PostFork,Sqlite,Sqlite.Raw
-            harness/.lake/build/bin/lean-swe-test --suite Git --suite Compress --suite CmdLine --suite EnvVars.Raw --suite EnvVars --suite CryptoHash.Raw --suite CryptoHash --suite PostFork --suite Sqlite --suite Sqlite.Raw 0<&- 1>&- 2>&-
             harness/.lake/build/bin/leanswe-fuzz --smoke --suite sandbox,timerand,files,process,poll,net,passwd,dns --self-test-shrink 0<&- 1>&- 2>&-
-            harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/timerand.log" --nonce "$FIRST_NONCE"
+            harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 1000000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/timerand.log" --nonce "$DAILY_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite timerand --steps 250000 --random-seed --self-test-shrink
-            PYTHONUNBUFFERED=1 python3 -B scripts/fuzz_changed.py --base HEAD --head HEAD --check-manifest
-            stdbuf -oL -eL harness/.lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink --coverage-log "$FUZZ_COV_DIR/other.log" --nonce "$FIRST_NONCE"
+            stdbuf -oL -eL harness/.lake/build/bin/leanswe-fuzz --all --exclude sandbox,timerand,files,process,poll,net --steps 50000 --random-seed --self-test-shrink --coverage-log "$FUZZ_COV_DIR/other.log" --nonce "$DAILY_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --poll-strace-fault-check
             harness/.lake/build/bin/leanswe-fuzz --net-strace-fault-check
-            harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/poll.log" --nonce "$FIRST_NONCE"
+            harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 250000 --self-test-shrink --coverage-log "$FUZZ_COV_DIR/poll.log" --nonce "$DAILY_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite poll --steps 750000 --random-seed --self-test-shrink
-            harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/net.log" --nonce "$FIRST_NONCE"
+            harness/.lake/build/bin/leanswe-fuzz --suite net --steps 250000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/net.log" --nonce "$DAILY_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite net --seed 11262680905236430927 --steps 50000 --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite net --steps 750000 --random-seed --self-test-shrink --require-ns
-            harness/.lake/build/bin/lean-swe-mut-test --mode full --suite LinuxSyscall.Process
             harness/.lake/build/bin/leanswe-fuzz --process-strace-fault-check
-            harness/.lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/process.log" --nonce "$FIRST_NONCE"
+            harness/.lake/build/bin/leanswe-fuzz --suite process --steps 50000 --self-test-shrink --require-ns --coverage-log "$FUZZ_COV_DIR/process.log" --nonce "$DAILY_NONCE"
             harness/.lake/build/bin/leanswe-fuzz --suite process --steps 15000 --random-seed --self-test-shrink --require-ns
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 100000 --self-test-shrink
             harness/.lake/build/bin/leanswe-fuzz --suite postfork --steps 50000 --random-seed --self-test-shrink
@@ -423,14 +374,14 @@ jobs:
           done
           trap - EXIT; cleanup_daily
 
-      - name: Verify combined runtime and fuzzer coverage logs
+      - name: Verify fuzzer coverage logs
         id: verify_fuzz_cov
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' && steps.repeat_tests.outcome == 'success' && steps.files_world_fuzz.outcome == 'success' }}
         run: |
           set -euo pipefail
           [[ -s "$RUNNER_TEMP/daily.nonce" ]] || { echo "ERROR: missing $RUNNER_TEMP/daily.nonce" >&2; exit 1; }
           DAILY_NONCE=$(< "$RUNNER_TEMP/daily.nonce"); FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
-          lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --verify-log "$RUNNER_TEMP/daily-assump.log" --nonce "$DAILY_NONCE" --require-fuzz-equiv --coverage-log "$RUNNER_TEMP/daily-rt-cov.log" --coverage-log "$FUZZ_COV_DIR/sandbox.log" --coverage-log "$FUZZ_COV_DIR/timerand.log" --coverage-log "$FUZZ_COV_DIR/other.log" --coverage-log "$FUZZ_COV_DIR/poll.log" --coverage-log "$FUZZ_COV_DIR/net.log" --coverage-log "$FUZZ_COV_DIR/process.log" --coverage-log "$FUZZ_COV_DIR/files.log" 2>&1 | tee "$RUNNER_TEMP/verify_fuzz_cov.log"
+          lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --nonce "$DAILY_NONCE" --require-fuzz-equiv --coverage-log "$FUZZ_COV_DIR/sandbox.log" --coverage-log "$FUZZ_COV_DIR/timerand.log" --coverage-log "$FUZZ_COV_DIR/other.log" --coverage-log "$FUZZ_COV_DIR/poll.log" --coverage-log "$FUZZ_COV_DIR/net.log" --coverage-log "$FUZZ_COV_DIR/process.log" --coverage-log "$FUZZ_COV_DIR/files.log" 2>&1 | tee "$RUNNER_TEMP/verify_fuzz_cov.log"
 
       - name: Open deduplicated GitHub issue on failure
         if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}

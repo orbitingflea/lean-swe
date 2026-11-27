@@ -984,7 +984,7 @@ def runEdgeCaseReproducers : IO Unit := do
   assertTrue "reapThreadGroup prunes shadowed duplicate PID entries"
     (assocGet sShadowReaped.procs 2300).isNone
 
-/-- Run all `Process` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke` and `lean-swe-mut-test`). -/
+/-- Run all `Process` real and mocked regression and error-path checks (dispatched by `leanswe-fuzz --smoke`). -/
 def runChecks : IO Unit := do
   assume_process_pipe2_atomicFlagsAndFdPair
   assume_process_waitpid_wait4StatusAndReap
@@ -1193,7 +1193,7 @@ def runStraceFaultCheck : IO Unit := do
       if out.exitCode != 0 then
         throw (IO.userError s!"strace fault-injection failed for {sysName}/{errName} (when={whenIdx}, exit={out.exitCode}): {out.stderr}")
 
-/-- Handle `--process-strace-fault-check` and `--process-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`) and `lean-swe-mut-test`. -/
+/-- Handle `--process-strace-fault-check` and `--process-strace-worker` subcommands dispatched by `leanswe-fuzz` (`Fuzz.LinuxSyscall.Main.tryDispatchEarlyWorker`). -/
 def probeMain (args : List String) : IO UInt32 := do
   match args with
   | [] =>

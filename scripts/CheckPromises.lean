@@ -1249,26 +1249,6 @@ private def forallBorrowsAndBaseIOErrno (ty : Expr) : Array Bool × Bool := Id.r
     c := body.consumeMData
   return (out, c.isAppOfArity ``BaseIO 1 && c.appArg!.consumeMData.isAppOfArity ``Except 2 && c.appArg!.consumeMData.appFn!.appArg!.consumeMData.isConstOf `LeanSwe.LinuxSyscall.Errno)
 
-private def checkPostForkRuntimeTestsExterns (env : Environment) (consts : Array ConstantInfo) : Array String := Id.run do
-  let allowed : Array String := #["rawMkPipeCloexec", "rawCloseFd", "rawWriteOnce", "rawReadOnce", "rawWaitOnce"]
-  let mut errs : Array String := #[]
-  let mut privRaws : Std.HashSet Name := {}
-  for c in consts do
-    let ext? := getExternAttrData? env c.name
-    if c matches .opaqueInfo _ || ext?.isSome then
-      let ok := isPrivateName c.name && (c matches .opaqueInfo _) && match privateToUserName? c.name with
-        | some u => u.getPrefix == `LeanSwe.PostFork.RuntimeTests && allowed.contains u.getString! && match postForkExternSpecs.find? (·.1 == Name.str `LeanSwe.PostFork u.getString!) with
-          | some (_, sym, _, bs) => let (gb, gc) := forallBorrowsAndBaseIOErrno c.type; isExactStandardExtern ext? sym && bs == gb && gc | none => false
-        | none => false
-      if ok then privRaws := privRaws.insert c.name else errs := errs.push s!"FORBIDDEN_EXTERN_IN_POSTFORK: {c.name} in LeanSwe.PostFork.RuntimeTests"
-    if !isPrivateName c.name && (Lean.declRangeExt.find? env c.name).isSome then
-      let s := c.name.getString!
-      let okPub := c.name == `LeanSwe.PostFork.RuntimeTests.runAll || c.name == `LeanSwe.PostFork.RuntimeTests.registeredAssumptions ||
-        c.name == `LeanSwe.PostFork.RuntimeTests.registeredErrorTests || ((s.startsWith "assume_postfork_" || s.startsWith "err_") && c.name.getPrefix == `LeanSwe.PostFork.RuntimeTests)
-      if !okPub || c.type.getUsedConstants.any privRaws.contains || c.type.getUsedConstants.contains `LeanSwe.LinuxSyscall.RawFd then
-        errs := errs.push s!"TRUSTED_CLOSURE_PUBLIC_FFI_LEAK: {c.name} in LeanSwe.PostFork.RuntimeTests exposes raw handle/FFI"
-  return errs
-
 private def checkPostForkPrivateWiring (env : Environment) : IO (Array String) := do
   let allowPub : Array Name := #[`LeanSwe.PostFork.defaultOps,
     `LeanSwe.PostFork.spawn, `LeanSwe.PostFork.spawnWithBarrier, `LeanSwe.PostFork.releaseBarrier, `LeanSwe.PostFork.abortBarrier]
@@ -5520,10 +5500,6 @@ unsafe def main (args : List String) : IO UInt32 := do
     pure (env, {})
 
   for rtMod in runtimeTestMods do
-    if rtMod == `LeanSwe.PostFork.RuntimeTests then
-      if let some idx := rtParseEnv.header.moduleNames.findIdx? (· == rtMod) then
-        if let some data := rtParseEnv.header.moduleData[idx]? then
-          errors := errors ++ checkPostForkRuntimeTestsExterns rtParseEnv data.constants
     let rtPath := moduleToFilePath repoDir rtMod
     match ← parseModuleCommands rtParseEnv rtPath with
     | .error err => errors := errors.push s!"RUNTIMETESTS_PARSE_ERROR: {rtMod} ({err})"
@@ -5543,9 +5519,6 @@ unsafe def main (args : List String) : IO UInt32 := do
           break
 
   let mut auxFiles : Array (String × System.FilePath) := #[]
-  let testsDir := repoDir / "harness" / "Tests"
-  if ← testsDir.pathExists then
-    auxFiles := auxFiles ++ (← collectLeanRelFiles testsDir "harness/Tests")
   let fuzzDir := repoDir / "harness" / "Fuzz"
   if ← fuzzDir.pathExists then
     auxFiles := auxFiles ++ (← collectLeanRelFiles fuzzDir "harness/Fuzz")

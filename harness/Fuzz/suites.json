@@ -41,8 +41,7 @@
     "harness/lean-toolchain",
     "lake-manifest.json",
     "lakefile.lean",
-    "lean-toolchain",
-    "scripts/fuzz_changed.py"
+    "lean-toolchain"
   ],
   "suites": {
     "selftest": { "paths": ["harness/Fuzz/SelfTest.lean"] },
