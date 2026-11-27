@@ -83,7 +83,7 @@ def main (args : List String) : IO UInt32 := do
   let concImplHdr := "import Core.ConcOps\nimport LeanSwe.MiniLeaf.Types\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\n"
   let compIfaceHdr := "import Core.ConcOps\nimport LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\n"
   let concProofHdr := "import Core.ConcOps\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\n"
-  let rawPingIfaceHdr := "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n"
+  let rawPingIfaceHdr := "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n"
   let leafProofHdr := "import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n"
 
   let cellModSrc := compModelHdr ++ "abbrev CellFam (_ _ : Type → Type) : Type := Nat\ndef mapS (r c : Nat) : Nat := r + c\ndef cellToModel {R T : Type → Type} (c : CellFam R T) : Nat := c\n" ++

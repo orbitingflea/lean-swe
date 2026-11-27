@@ -93,7 +93,7 @@ private def baselineFiles : Array (String × String) := #[
     "def execLeaf {W : Type} (ops : LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\ndef allowedLeaf (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n"),
   ("LeanSwe/MiniLeaf/Impl.lean", "import LeanSwe.MiniLeaf.Types\nnamespace LeanSwe.MiniLeaf.Internal\ndef mkOps {m : Type → Type} [Monad m] (raw : Nat → m Nat) : LeafOpsM m := { ping := raw }\nend LeanSwe.MiniLeaf.Internal\n"),
   ("LeanSwe/MiniLeaf/Interface.lean",
-    "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+    "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
     "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\nend LeanSwe.MiniLeaf\n"),
   ("LeanSwe/MiniLeaf/Proofs.lean",
     "import Core.Obeys\nimport LeanSwe.MiniLeaf.Model\nimport LeanSwe.MiniLeaf.Interface\nnamespace LeanSwe.MiniLeaf.Proofs\n" ++
@@ -292,7 +292,7 @@ def main (_ : List String) : IO UInt32 := do
 
     runFiles "public_extern_in_boundary" (some "INVALID_EXTERN_PLACEMENT") #[
       ("LeanSwe/MiniLeaf/Interface.lean",
-       "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nopaque rawPing : Nat → BaseIO Nat\n" ++
+       "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nopaque rawPing : Nat → BaseIO Nat\n" ++
        "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\nend LeanSwe.MiniLeaf\n")]
       #["LeanSwe/MiniLeaf/Proofs.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
 
@@ -328,7 +328,7 @@ def main (_ : List String) : IO UInt32 := do
        "def mkOpsM {m : Type → Type} {fd : Type} [Monad m] (raw : LeafOpsM m fd) : LeafOpsM m fd := { ping := raw.ping }\n" ++
        "def mkOpsBase (raw : HandleLeafOpsM BaseIO) : HandleLeafOpsM BaseIO := mkOpsM raw\nend LeanSwe.MiniLeaf.Internal\n"),
       ("LeanSwe/MiniLeaf/Interface.lean",
-       "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+       "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
        "def defaultOpsBase : HandleLeafOpsM BaseIO := Internal.mkOpsBase { ping := rawPing }\n" ++
        "def defaultOps : LeafOps := { ping := fun n => liftM (defaultOpsBase.ping n) }\ndef ping (n : Nat) : IO Nat := defaultOps.ping n\nend LeanSwe.MiniLeaf\n"),
       ("LeanSwe/MiniLeaf/Proofs.lean",
@@ -424,7 +424,7 @@ def main (_ : List String) : IO UInt32 := do
       "def execPingTwice {W : Type} (fn : PingTwiceFn (StateM W)) (n : Nat) : StateM W (Nat × Nat) := fn n\n" ++
       "def allowedPing2 (s req : Nat) (out : Nat × Nat) (s' : Nat) : Prop := out = (req, req + 1) ∧ s' = s\nend LeanSwe.MiniLeaf.Model\n"
     let rawPingIfaceHdr :=
-      "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n"
+      "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n"
     let pingPairIfaceSrc (delta : Nat) (extra : String := "") : String :=
       rawPingIfaceHdr ++
       "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\ndef ping (n : Nat) : IO Nat := defaultOps.ping n\n" ++
@@ -470,7 +470,7 @@ def main (_ : List String) : IO UInt32 := do
        leafImplHdr ++ "def mkOps {m : Type → Type} [Monad m] {fd : Type} (_ : RawOpsM m fd) (fuel : Nat := 18) : LeafOpsM m := { ping := fun n => if fuel == 0 then pure n else pure n }\n" ++
        s!"def mkOpsM \{m : Type → Type} [Monad m] (raw : RawOpsM m Nat) : LeafOpsM m := {mkOpsCall}\nend LeanSwe.MiniLeaf.Internal\n"),
       ("LeanSwe/MiniLeaf/Interface.lean",
-       s!"import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"mini_leaf_raw_ping\"]\nprivate opaque rawPing : UInt32 → BaseIO Nat\nprivate def rawOps : RawOpsM IO UInt32 := \{ ping := fun fd => liftM (rawPing fd) }\ndef defaultOps : LeafOps := {defOpsCall}\nend LeanSwe.MiniLeaf\n"),
+       s!"import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"leanswe_mini_leaf_raw_ping\"]\nprivate opaque rawPing : UInt32 → BaseIO Nat\nprivate def rawOps : RawOpsM IO UInt32 := \{ ping := fun fd => liftM (rawPing fd) }\ndef defaultOps : LeafOps := {defOpsCall}\nend LeanSwe.MiniLeaf\n"),
       ("LeanSwe/MiniLeaf/Proofs.lean",
        leafProofHdr ++ "theorem obeys_model : Core.ObeysStepFrom id Model.leafWf Model.execRaw Model.allowedLeaf Model.leafWf Internal.mkOpsM Model.execLeaf Model.allowedLeaf := fun _ _ _ _ _ _ => ⟨rfl, rfl⟩\nend LeanSwe.MiniLeaf.Proofs\n")]
     let compExtraRels := #["LeanSwe/MiniComp/Model.lean", "LeanSwe/MiniComp/Impl.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
@@ -497,8 +497,191 @@ def main (_ : List String) : IO UInt32 := do
       ("LeanSwe/MiniLeaf/Proofs.lean", leafIdProofsSrc "Internal.mkOpsM")]
     runFiles "synth_derived_inhabited_aux_ignored" none #[
       ("LeanSwe/MiniPure/Interface.lean", pureIfaceHdr ++ "private structure PrivState where\n  x : Nat := 0\n  deriving Inhabited\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")] #["LeanSwe/MiniPure/Proofs.lean"]
-    runFiles "synth_smuggled_op_via_inst_body_rejected" (some "OBEYS_SYNTH_NO_MODEL_OP") #[
+    runFiles "synth_smuggled_op_via_inst_body_rejected" (some "OBEYS_SYNTH_PURE_MISMATCH") #[
+      ("LeanSwe/MiniPure/Model.lean",
+       "import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef instFooOp (n : Nat) : Nat := n + 2\nend LeanSwe.MiniPure.Model\n"),
       ("LeanSwe/MiniPure/Interface.lean", pureIfaceHdr ++ "def instFoo.op (n : Nat) : Nat := n + 2\ninstance instFoo : Inhabited (Nat → Nat) := ⟨instFoo.op⟩\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n")] #["LeanSwe/MiniPure/Proofs.lean"]
+
+    -- t-114(b): pure function with no Model twin passes cleanly (no forced Model twin).
+    runFiles "pure_op_without_model_twin_ok" none #[
+      ("LeanSwe/MiniPure/Interface.lean",
+       pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef formatLabel (n : Nat) : String := s!\"v={n}\"\nend LeanSwe.MiniPure\n")]
+      #["LeanSwe/MiniPure/Proofs.lean"]
+
+    -- t-114(b): pure function with an existing Model twin omitted from obeys_model still fails.
+    runFiles "pure_op_with_model_twin_omitted_fails" (some "OBEYS_SYNTH_PURE_MISMATCH") #[
+      ("LeanSwe/MiniPure/Model.lean",
+       "import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef formatLabelModel (n : Nat) : String := s!\"v={n}\"\nend LeanSwe.MiniPure.Model\n"),
+      ("LeanSwe/MiniPure/Interface.lean",
+       pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef formatLabel (n : Nat) : String := s!\"v={n}\"\nend LeanSwe.MiniPure\n")]
+      #["LeanSwe/MiniPure/Proofs.lean"]
+
+    -- t-114(b): direct Model twin with mismatched type fails loudly instead of silently skipping.
+    runFiles "pure_op_with_mismatched_model_twin_fails" (some "OBEYS_SYNTH_NO_MODEL_OP") #[
+      ("LeanSwe/MiniPure/Model.lean",
+       "import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\ndef formatLabel (n : Nat) : Nat := n\nend LeanSwe.MiniPure.Model\n"),
+      ("LeanSwe/MiniPure/Interface.lean",
+       pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef formatLabel (n : Nat) : String := s!\"v={n}\"\nend LeanSwe.MiniPure\n")]
+      #["LeanSwe/MiniPure/Proofs.lean"]
+
+    -- t-114(b): <Pkg>.Properties and <Pkg>.Properties.* recognized alongside <Pkg>.Proofs.*.
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "properties_submodule_direct_theorem_ok" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Interface.lean",
+         pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef doublePure (n : Nat) : Nat := n + n\nend LeanSwe.MiniPure\n"),
+        ("LeanSwe/MiniPure/Proofs.lean",
+         pureProofsHdr ++ "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n"),
+        ("LeanSwe/MiniPure/Properties/PureLaws.lean",
+         "import LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Properties\ntheorem doublePure_zero : LeanSwe.MiniPure.doublePure 0 = 0 := rfl\nend LeanSwe.MiniPure.Properties\n"),
+        ("LeanSwe/MiniPure/Properties.lean",
+         "import LeanSwe.MiniPure.Properties.PureLaws\nnamespace LeanSwe.MiniPure.Properties\ntheorem doublePure_one : LeanSwe.MiniPure.doublePure 1 = 2 := rfl\nend LeanSwe.MiniPure.Properties\n")]
+      let roots := baselineRootsCsv ++ ",LeanSwe.MiniPure.Properties"
+      assertPass "properties_submodule_dag_ok" (← runCmd bin.toString #["--internal-dag-audit", libDir.toString, roots])
+      return roots
+    ) none
+
+    -- I18: pure kind=model package with zero matched Interface ops is rejected (no dummy obeys_model).
+    runFiles "pure_model_zero_matched_ops_rejected" (some "OBEYS_SYNTH_NO_MATCHED_PURE_OP") #[
+      ("LeanSwe/MiniPure/Model.lean",
+       "import LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Model\ndef unrelatedHelper (n : Nat) : Nat := n\nend LeanSwe.MiniPure.Model\n"),
+      ("LeanSwe/MiniPure/Proofs.lean",
+       pureProofsHdr ++ "theorem obeys_model : Core.ObeysPureEq (id : Nat → Nat) id := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
+
+    -- I18: submodule Model twin with mismatched type fails loudly instead of silently returning .noModelTwin.
+    runFiles "pure_model_submodule_twin_mismatch_rejected" (some "OBEYS_SYNTH_NO_MODEL_OP") #[
+      ("LeanSwe/MiniPure/Model/Extra.lean",
+       "namespace LeanSwe.MiniPure.Model.Extra\ndef formatLabel (n : Nat) : Nat := n\nend LeanSwe.MiniPure.Model.Extra\n"),
+      ("LeanSwe/MiniPure/Model.lean",
+       "import LeanSwe.MiniPure.Types\nimport LeanSwe.MiniPure.Model.Extra\nnamespace LeanSwe.MiniPure.Model\ndef evalModel (n : Nat) : Nat := n + 1\nend LeanSwe.MiniPure.Model\n"),
+      ("LeanSwe/MiniPure/Interface.lean",
+       pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef formatLabel (n : Nat) : String := s!\"v={n}\"\nend LeanSwe.MiniPure\n")]
+      #["LeanSwe/MiniPure/Proofs.lean"]
+
+    -- I01: module containing an `Aeneas` segment in normal closure is NOT exempt from source/host-IO checks.
+    do
+      let caseDir := tmpRoot / "case_closure_aeneas_seg"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      let leanPath := s!"{libDir}:{realLibAbs}"
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Impl/Aeneas.lean",
+         "namespace LeanSwe.MiniPure.Internal\ndef sneakIo (s : String) : IO Unit := IO.println s\nend LeanSwe.MiniPure.Internal\n")]
+      assertFailWith "closure_aeneas_segment_not_exempt_rejected" "TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv ++ ",LeanSwe.MiniPure.Impl.Aeneas"])
+      IO.FS.removeDirAll caseDir
+
+    -- I02: exempt role visiting Core.ioStateCell must NOT poison visited for non-exempt Impl role.
+    do
+      let caseDir := tmpRoot / "case_closure_visited_poison"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      let leanPath := s!"{libDir}:{realLibAbs}"
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Impl.lean",
+         "import Core.ConcOps\nimport LeanSwe.MiniPure.Types\nnamespace LeanSwe.MiniPure.Internal\ndef evalImpl (n : Nat) : Nat := n + 1\ndef sneakCell (r : IO.Ref Nat) : IO Nat := (Core.ioStateCell r).get\nend LeanSwe.MiniPure.Internal\n"),
+        ("LeanSwe/MiniPure/Interface.lean",
+         "import LeanSwe.MiniPure.Impl\nnamespace LeanSwe.MiniPure\ndef eval (n : Nat) : Nat := Internal.evalImpl n\nend LeanSwe.MiniPure\n"),
+        ("LeanSwe/MiniPure/Proofs.lean",
+         "import Core.Obeys\nimport Core.ConcOps\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\ndef touchCell (r : IO.Ref Nat) : IO Nat := (Core.ioStateCell r).get\ntheorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
+      assertFailWith "closure_role_visited_poisoning_rejected" "TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      IO.FS.removeDirAll caseDir
+
+    -- I05: Proofs file using infixl (without other trigger tokens) still triggers parser and fails.
+    do
+      let caseDir := tmpRoot / "case_closure_proof_infix"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      let leanPath := s!"{libDir}:{realLibAbs}"
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Proofs.lean",
+         pureProofsHdr ++ "local infixl:65 \" +++ \" => Nat.add\ntheorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
+      assertFailWith "closure_proof_infix_not_skipped_rejected" "TRUSTED_CLOSURE_FORBIDDEN_SYNTAX"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      IO.FS.removeDirAll caseDir
+
+    -- t-114(a): boundary extern symbol prefix check + generic manifest closure check.
+    runFiles "boundary_bad_extern_prefix_rejected" (some "INVALID_EXTERN_SYMBOL") #[
+      ("LeanSwe/MiniLeaf/Interface.lean",
+       "import LeanSwe.MiniLeaf.Impl\nnamespace LeanSwe.MiniLeaf\n@[extern \"raw_ping_no_prefix\"]\nprivate opaque rawPing : Nat → BaseIO Nat\n" ++
+       "def defaultOps : LeafOps := Internal.mkOps (fun n => liftM (rawPing n))\nend LeanSwe.MiniLeaf\n")]
+      #["LeanSwe/MiniLeaf/Proofs.lean", "LeanSwe/MiniComp/Interface.lean", "LeanSwe/MiniComp/Proofs.lean"]
+
+    assertPass "baseline_generic_closure_ok"
+      (← runCmd bin.toString #["--internal-closure-audit", baseLib.toString, baseRoot.toString, baseMan.toString, baselineRootsCsv])
+
+    -- t-114(a): generic manifest closure rejects undeclared package dependency imports.
+    do
+      let caseDir := tmpRoot / "case_closure_undeclared_dep"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      writeFileCreatingParents (root / "scripts/package_manifest.json")
+        (baselineManifestJson.replace "\"deps\": [\"LeanSwe.MiniLeaf\"]" "\"deps\": []")
+      assertFailWith "closure_undeclared_dep_rejected" "TRUSTED_CLOSURE_UNALLOWED_IMPORT"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      IO.FS.removeDirAll caseDir
+
+    -- t-114(a): generic manifest closure rejects forbidden host IO externs in non-boundary packages.
+    do
+      let caseDir := tmpRoot / "case_closure_host_io"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      let leanPath := s!"{libDir}:{realLibAbs}"
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Interface.lean",
+         pureIfaceHdr ++ "def eval (n : Nat) : Nat := Internal.evalImpl n\ndef sneakPrint (s : String) : IO Unit := IO.println s\nend LeanSwe.MiniPure\n")]
+        #["LeanSwe/MiniPure/Proofs.lean"]
+      assertFailWith "closure_forbidden_host_io_extern_rejected" "TRUSTED_CLOSURE_FORBIDDEN_HOST_IO_EXTERN"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      IO.FS.removeDirAll caseDir
+
+    -- t-114(b): public theorems in <Pkg>.Properties are checked for standard axioms (no sorry).
+    runPromiseMutantCase bin tmpRoot baseDir realLibAbs "properties_sorry_rejected" (fun root libDir leanPath => do
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniPure/Properties.lean",
+         "import LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Properties\ntheorem bad_prop : LeanSwe.MiniPure.eval 0 = 999 := sorry\nend LeanSwe.MiniPure.Properties\n")]
+      return baselineRootsCsv ++ ",LeanSwe.MiniPure.Properties"
+    ) (some "UNALLOWED_AXIOM_IN_PROPERTY")
+
+    -- t-112 Loophole 1: canonical stateful step model-equivalence checks (joint wf + exec + allowed).
+    let canonStepModel :=
+      compModelHdr ++
+      "def pkgWf (_ : Nat) : Bool := true\ndef weakWf (s : Nat) : Bool := s == 0\n" ++
+      "def execRaw {W : Type} (ops : LeanSwe.MiniLeaf.LeafOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.ping req\n" ++
+      "def allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+      "def execPkgStep {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\n" ++
+      "def dummyExec {W : Type} (_ : CompApiM (StateM W)) (req : Nat) : StateM W Nat := pure req\n" ++
+      "def allowedPkgStep (s req out s' : Nat) : Prop := out = req ∧ s' = s\n" ++
+      "def weakAllowed (_ _ _ _ : Nat) : Prop := 0 = 0\nend LeanSwe.MiniComp.Model\n"
+
+    runFiles "step_equiv_canonical_joint_ok" none #[
+      ("LeanSwe/MiniComp/Model.lean", canonStepModel),
+      ("LeanSwe/MiniComp/Proofs.lean",
+       compProofsHdr ++ "theorem obeys_model : Core.ObeysStepFrom id Model.pkgWf Model.execRaw Model.allowedRaw Model.pkgWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")]
+
+    runFiles "step_equiv_wrong_pkgWf_rejected" (some "OBEYS_SYNTH_WF_MISMATCH") #[
+      ("LeanSwe/MiniComp/Model.lean", canonStepModel),
+      ("LeanSwe/MiniComp/Proofs.lean",
+       compProofsHdr ++ "theorem obeys_model : Core.ObeysStepFrom id Model.pkgWf Model.execRaw Model.allowedRaw Model.weakWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep := fun _ _ h w req _ => h w req rfl\nend LeanSwe.MiniComp.Proofs\n")]
+
+    runFiles "step_equiv_wrong_allowed_rejected" (some "OBEYS_SYNTH_ALLOWED_MISMATCH") #[
+      ("LeanSwe/MiniComp/Model.lean", canonStepModel),
+      ("LeanSwe/MiniComp/Proofs.lean",
+       compProofsHdr ++ "theorem obeys_model : Core.ObeysStepFrom id Model.pkgWf Model.execRaw Model.allowedRaw Model.pkgWf Internal.mkApiM Model.execPkgStep Model.weakAllowed := fun _ _ _ _ _ _ => rfl\nend LeanSwe.MiniComp.Proofs\n")]
+
+    runFiles "step_equiv_split_conjunct_rejected" (some "OBEYS_SYNTH_STEP_EQUIV_MISMATCH") #[
+      ("LeanSwe/MiniComp/Model.lean", canonStepModel),
+      ("LeanSwe/MiniComp/Proofs.lean",
+       compProofsHdr ++
+       "theorem obeys_model :\n" ++
+       "    Core.ObeysStepFrom id Model.pkgWf Model.execRaw Model.allowedRaw Model.pkgWf Internal.mkApiM Model.execPkgStep Model.weakAllowed ∧\n" ++
+       "    Core.ObeysStepFrom id Model.pkgWf Model.execRaw Model.allowedRaw Model.pkgWf Internal.mkApiM Model.dummyExec Model.allowedPkgStep :=\n" ++
+       "  ⟨fun _ _ _ _ _ _ => rfl, fun _ _ _ _ _ _ => ⟨rfl, rfl⟩⟩\nend LeanSwe.MiniComp.Proofs\n")]
 
     let invModHdr := "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\n"
     let invImplHdr := "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\n"
@@ -672,7 +855,7 @@ def main (_ : List String) : IO UInt32 := do
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
     assertPass "dag_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesDagTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=70 failed=0"
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=89 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot
