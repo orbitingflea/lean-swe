@@ -167,36 +167,6 @@ extern_lib «leanswe_net_fuzz_env» pkg := do
   let name := nameToStaticLib "leanswe_net_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
-extern_lib «leanswe_postfork_fuzz» pkg := do
-  let rootPkg ← rootLeanSwePkg
-  let oFile := pkg.buildDir / "c" / "postfork_fuzz.o"
-  let fuzzCDir := pkg.dir / "Fuzz" / "PostFork" / "c"
-  let postforkCDir := rootPkg.dir / "LeanSwe" / "PostFork" / "c"
-  let srcJob ← inputTextFile (fuzzCDir / "postfork_fuzz.c")
-  let hdrJob ← inputTextFile (postforkCDir / "postfork.h")
-  let fdBoxHdrJob ← inputTextFile (rootPkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "fd_box.h")
-  let probeSrc := fuzzCDir / "postfork_probe.c"
-  let probeSrcJob ← inputTextFile probeSrc
-  let probeExe := pkg.binDir / "leanswe-postfork-probe"
-  let probeJob ← buildFileAfterDep probeExe probeSrcJob fun src => do
-    createParentDirs probeExe
-    let cc := ((← IO.getEnv "CC").filter (!·.isEmpty)).getD "cc"
-    proc {
-      cmd := cc
-      args := #["-static", "-O2", "-Wall", "-Wextra", "-Werror", "-o", probeExe.toString, src.toString]
-    }
-  let depsJob := Job.collectArray #[srcJob, hdrJob, fdBoxHdrJob, probeJob]
-  let lean ← getLeanInstall
-  let oJob ← buildO oFile (depsJob.map fun _ => fuzzCDir / "postfork_fuzz.c")
-    #["-I", lean.includeDir.toString, "-I", postforkCDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let weakRustPath := rootPkg.buildDir / "c" / "postfork_rust_weak.o"
-  let weakRustDep ← rootPkg.fetchTargetJob `postfork_rust_weak_o
-  let weakRustJob : Job System.FilePath := weakRustDep.map fun _ => weakRustPath
-  let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "postfork_fuzz"
-  let name := nameToStaticLib "leanswe_postfork_fuzz"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob, weakRustJob, fdBoxJob]
-
 @[default_target]
 lean_exe «leanswe-fuzz» where
   root := `Fuzz.Main

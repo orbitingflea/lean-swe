@@ -395,45 +395,85 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     let cur := (harnessManJson.getObjValAs? Bool "fixedToolchain").toOption.getD false
     let updated ← setJsonObjField harnessManJson "fixedToolchain" (.bool (!cur))
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") updated.pretty
-  runParityMut "harness_manifest_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "rev_drift" isInheritedGitPkg fun e => do
+  let gitBaseDir := tmpRoot / "harness_parity_git_base"
+  let (proofsGitManJson, harnessGitManJson, gitBaseForMut) ← do
+    if expectedInheritedCount > 0 then
+      pure (proofsManJson, harnessManJson, baseDir)
+    else
+      let mkSyntheticGitPkg (inh : Bool) : Lean.Json := Lean.Json.mkObj [
+        ("url", .str "https://example.invalid/demo.git"),
+        ("type", .str "git"),
+        ("subDir", .null),
+        ("scope", .str "demo"),
+        ("rev", .str "0123456789abcdef0123456789abcdef01234567"),
+        ("name", .str "demo-git"),
+        ("manifestFile", .str "lake-manifest.json"),
+        ("inputRev", .str "main"),
+        ("inherited", .bool inh),
+        ("configFile", .str "lakefile.lean")
+      ]
+      let pArr := match proofsManJson.getObjVal? "packages" with | .ok (.arr a) => a | _ => #[]
+      let hArr := match harnessManJson.getObjVal? "packages" with | .ok (.arr a) => a | _ => #[]
+      let pGit ← setJsonObjField proofsManJson "packages" (.arr (pArr.push (mkSyntheticGitPkg false)))
+      let hGit ← setJsonObjField harnessManJson "packages" (.arr (hArr.push (mkSyntheticGitPkg true)))
+      copyDirTree baseDir gitBaseDir
+      IO.FS.writeFile (gitBaseDir / "proofs" / "lake-manifest.json") pGit.pretty
+      IO.FS.writeFile (gitBaseDir / "harness" / "lake-manifest.json") hGit.pretty
+      let gOut ← runCmd bin.toString #[gitBaseDir.toString]
+      let gComb := gOut.stdout ++ "\n" ++ gOut.stderr
+      if gOut.exitCode != 0 || (gComb.splitOn "HARNESS_PARITY_CHECK: inherited_packages=1 errors=0").length <= 1 then
+        throw (IO.userError s!"FAIL [harness_parity_git_clean]: expected exit 0 with inherited_packages=1:\n{gComb}")
+      pure (pGit, hGit, gitBaseDir)
+
+  let runGitParityMut (name code : String)
+      (mutate : System.FilePath → IO Unit)
+      (forbiddenCodes : Array String := #[]) : IO Unit := do
+    let d := tmpRoot / s!"parity_{name}"
+    copyDirTree gitBaseForMut d
+    mutate d
+    let out ← runCmd bin.toString #[d.toString]
+    expectOutputContains name code out forbiddenCodes
+    IO.FS.removeDirAll d
+
+  runGitParityMut "harness_manifest_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg harnessGitManJson "rev_drift" isInheritedGitPkg fun e => do
       let curRev := (e.getObjValAs? String "rev").toOption.getD "deadbeef"
       setJsonObjField e "rev" (.str (toggleHexStr curRev))
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_input_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "input_rev_drift" isInheritedGitPkg fun e => do
+  runGitParityMut "harness_manifest_input_rev_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg harnessGitManJson "input_rev_drift" isInheritedGitPkg fun e => do
       let cur := (e.getObjValAs? String "inputRev").toOption.getD "main"
       setJsonObjField e "inputRev" (.str s!"{cur}-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_subdir_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "subdir_drift" isInheritedGitPkg fun e => do
+  runGitParityMut "harness_manifest_subdir_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg harnessGitManJson "subdir_drift" isInheritedGitPkg fun e => do
       let nextVal : Lean.Json := match (e.getObjVal? "subDir").toOption with
         | some (.str s) => .str s!"{s}/drift"
         | _ => .str "drift-subdir"
       setJsonObjField e "subDir" nextVal
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_scope_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "scope_drift" isInheritedGitPkg fun e => do
+  runGitParityMut "harness_manifest_scope_drift" "HARNESS_MANIFEST_FIELD_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg harnessGitManJson "scope_drift" isInheritedGitPkg fun e => do
       let curScope := (e.getObjValAs? String "scope").toOption.getD ""
       setJsonObjField e "scope" (.str s!"{curScope}-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_missing_pkg" "HARNESS_MANIFEST_MISSING_PACKAGE"
+  runGitParityMut "harness_manifest_missing_pkg" "HARNESS_MANIFEST_MISSING_PACKAGE"
       (forbiddenCodes := #["HARNESS_MANIFEST_EXTRA_PACKAGE", "HARNESS_MANIFEST_MISSING_ROOT_DEP"]) fun d => do
-    let mutated ← dropFirstManifestPkg harnessManJson "delete_inherited_pkg" isInheritedPkg
+    let mutated ← dropFirstManifestPkg harnessGitManJson "delete_inherited_pkg" isInheritedPkg
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_extra_pkg" "HARNESS_MANIFEST_EXTRA_PACKAGE"
+  runGitParityMut "harness_manifest_extra_pkg" "HARNESS_MANIFEST_EXTRA_PACKAGE"
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_DUPLICATE_PACKAGE"]) fun d => do
-    let mutated ← appendManifestPkg harnessManJson "append_extra_pkg" isInheritedPkg fun e => do
+    let mutated ← appendManifestPkg harnessGitManJson "append_extra_pkg" isInheritedPkg fun e => do
       let curName := (e.getObjValAs? String "name").toOption.getD "pkg"
       setJsonObjField e "name" (.str s!"{curName}-extra-drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
+  runGitParityMut "harness_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
-    let mutated ← appendManifestPkg harnessManJson "dup_harness_pkg" isInheritedPkg pure
+    let mutated ← appendManifestPkg harnessGitManJson "dup_harness_pkg" isInheritedPkg pure
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "proofs_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
+  runGitParityMut "proofs_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
-    let mutated ← appendManifestPkg proofsManJson "dup_proofs_pkg" (!isPathPkg ·) pure
+    let mutated ← appendManifestPkg proofsGitManJson "dup_proofs_pkg" (!isPathPkg ·) pure
     IO.FS.writeFile (d / "proofs" / "lake-manifest.json") mutated
   runParityMut "root_manifest_external_deps_forbidden" "ROOT_MANIFEST_EXTERNAL_DEPS_FORBIDDEN" fun d => do
     let fakePkg := Lean.Json.mkObj [("name", .str "bogus"), ("type", .str "git")]
@@ -455,8 +495,8 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
   runParityMut "proofs_manifest_missing_root_dep" "PROOFS_MANIFEST_MISSING_ROOT_DEP" fun d => do
     let mutated ← dropFirstManifestPkg proofsManJson "proofs_drop_root_dep" (isNamedPkg rootPkgName)
     IO.FS.writeFile (d / "proofs" / "lake-manifest.json") mutated
-  runParityMut "harness_manifest_unexpected_direct_dep" "HARNESS_MANIFEST_UNEXPECTED_PACKAGE" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "unexpected_direct_dep" isInheritedPkg fun e =>
+  runGitParityMut "harness_manifest_unexpected_direct_dep" "HARNESS_MANIFEST_UNEXPECTED_PACKAGE" fun d => do
+    let mutated ← mapFirstManifestPkg harnessGitManJson "unexpected_direct_dep" isInheritedPkg fun e =>
       setJsonObjField e "inherited" (.bool false)
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_root_dep_drift" "HARNESS_MANIFEST_ROOT_DEP_MISMATCH" fun d => do
@@ -482,6 +522,8 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     let ga ← runCmd "git" #["add", "outside/Bad.lean"] (some d)
     if ga.exitCode != 0 then
       throw (IO.userError s!"git add failed: {ga.stderr}")
+  if ← gitBaseDir.pathExists then
+    IO.FS.removeDirAll gitBaseDir
   IO.FS.removeDirAll baseDir
 
 private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO System.FilePath := do

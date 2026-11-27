@@ -70,55 +70,6 @@ extern_lib «leanswe_cryptohash» pkg := do
   let name := nameToStaticLib "leanswe_cryptohash"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
-private def resolveCargoAndEnv (rustFlags? : Option String) :
-    IO (String × Array (String × Option String)) := do
-  let homeDir := (← IO.getEnv "HOME").getD ""
-  let aeneasToolchain := s!"{homeDir}/.local/share/aeneas-toolchain"
-  let fallbackCargo : System.FilePath := s!"{aeneasToolchain}/cargo/bin/cargo"
-  let findCargoOnPath : IO (Option String) := do
-    let pathEnv := (← IO.getEnv "PATH").getD ""
-    for dir in pathEnv.splitOn ":" do
-      if !dir.isEmpty then
-        let cand : System.FilePath := System.FilePath.mk dir / "cargo"
-        if ← cand.pathExists then
-          return some cand.toString
-    return none
-  let cargoBin ← do
-    match (← IO.getEnv "CARGO").filter (!·.isEmpty) with
-    | some c => pure c
-    | none =>
-      match (← findCargoOnPath) with
-      | some c => pure c
-      | none =>
-        if !homeDir.isEmpty && (← fallbackCargo.pathExists) then
-          pure fallbackCargo.toString
-        else
-          pure "cargo"
-  let aeneasPath : System.FilePath := aeneasToolchain
-  let absAeneas? ←
-    if !homeDir.isEmpty && (← aeneasPath.pathExists) then
-      pure (some (← IO.FS.realPath aeneasPath))
-    else
-      pure none
-  let cargoPath : System.FilePath := cargoBin
-  let absCargo? ←
-    if (← cargoPath.pathExists) then
-      pure (some (← IO.FS.realPath cargoPath))
-    else
-      pure none
-  let useAeneas := match absAeneas?, absCargo? with
-    | some ad, some cb => cb.toString.startsWith (ad.toString ++ "/")
-    | _, _ => false
-  let baseEnv : Array (String × Option String) := #[
-    ("RUSTUP_TOOLCHAIN", none),
-    ("CARGO_BUILD_TARGET", none),
-    ("RUSTFLAGS", rustFlags?)
-  ]
-  let extraEnv := match useAeneas, absAeneas? with
-    | true, some ad => baseEnv ++ #[("CARGO_HOME", some s!"{ad}/cargo"), ("RUSTUP_HOME", some s!"{ad}/rustup")]
-    | _, _ => baseEnv
-  return (cargoBin, extraEnv)
-
 extern_lib «leanswe_linux_process» pkg := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
   let hdrJob ← inputTextFile (cDir / "fd_box.h")
@@ -232,74 +183,16 @@ extern_lib «leanswe_linux_fd_box» pkg := do
   let name := nameToStaticLib "leanswe_linux_fd_box"
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
-/-- Build `#![no_std]` `libleanswe_postfork_rust.a` with localized internal symbols. -/
-target «postfork_rust_archive» pkg : System.FilePath := do
-  let rustDir := pkg.dir / "LeanSwe" / "PostFork" / "rust"
-  let targetDir := pkg.buildDir / "postfork-rust"
-  let outLib := pkg.staticLibDir / nameToStaticLib "leanswe_postfork_rust"
-  let manifestJob ← inputTextFile (rustDir / "Cargo.toml")
-  let lockJob ← inputTextFile (rustDir / "Cargo.lock")
-  let toolchainJob ← inputTextFile (rustDir / "rust-toolchain.toml")
-  let srcLib ← inputTextFile (rustDir / "src" / "lib.rs")
-  let srcSys ← inputTextFile (rustDir / "src" / "sys.rs")
-  let srcFd ← inputTextFile (rustDir / "src" / "fd_ops.rs")
-  let srcChild ← inputTextFile (rustDir / "src" / "child.rs")
-  let srcFfi ← inputTextFile (rustDir / "src" / "ffi.rs")
-  let depsJob := Job.collectArray #[manifestJob, lockJob, toolchainJob, srcLib, srcSys, srcFd, srcChild, srcFfi]
-  buildFileAfterDep outLib depsJob fun _ => do
-    createParentDirs outLib
-    IO.FS.createDirAll targetDir
-    let absRustDir ← IO.FS.realPath rustDir
-    let absTargetDir ← IO.FS.realPath targetDir
-    let (cargoBin, extraEnv) ← resolveCargoAndEnv (some "-C opt-level=3")
-    proc {
-      cmd := cargoBin
-      args := #["build", "--locked", "--target-dir", absTargetDir.toString, "--release", "--features", "standalone"]
-      cwd := some absRustDir
-      env := extraEnv
-    }
-    let builtRlib := absTargetDir / "release" / "libpostfork.rlib"
-    let objDir := absTargetDir / "obj-extract"
-    proc {
-      cmd := "sh"
-      args := #[
-        "-eu", "-c",
-        "rm -rf \"$1\" \"$2\"; mkdir -p \"$1\"; (cd \"$1\" && ar x \"$3\"); for o in \"$1\"/*.rcgu.o; do \"${OBJCOPY:-objcopy}\" --keep-global-symbol=leanswe_postfork_run_child --keep-global-symbol=leanswe_postfork_close_fds_above2_except \"$o\"; done; ar rcs \"$2\" \"$1\"/*.rcgu.o",
-        "_", objDir.toString, outLib.toString, builtRlib.toString
-      ]
-    }
-
-/-- Emit a relocatable Rust object with weak `leanswe_postfork_*` definitions so standalone `extern_lib` `.so`s resolve under `LD_BIND_NOW=1` while `gcc -fuse-ld=bfd` static archive linking avoids duplicate symbols. -/
-target «postfork_rust_weak_o» pkg : System.FilePath := do
-  let archiveJob ← postfork_rust_archive.fetch
-  let weakObj := pkg.buildDir / "c" / "postfork_rust_weak.o"
-  let weakDir := pkg.buildDir / "postfork-rust" / "obj-weak"
-  buildFileAfterDep weakObj archiveJob fun archivePath => do
-    createParentDirs weakObj
-    proc {
-      cmd := "sh"
-      args := #[
-        "-eu", "-c",
-        "wdir=\"$1\"; out=\"$2\"; arc=\"$3\"; rm -rf \"$wdir\" \"$out\"; mkdir -p \"$wdir\"; (cd \"$wdir\" && ar x \"$arc\"); set -- \"$wdir\"/*.rcgu.o; if [ \"$#\" -eq 1 ]; then cp \"$1\" \"$out\"; else \"${LD:-ld}\" -r -o \"$out\" \"$@\"; fi; \"${OBJCOPY:-objcopy}\" --weaken-symbol=leanswe_postfork_run_child --weaken-symbol=leanswe_postfork_close_fds_above2_except \"$out\"",
-        "_", weakDir.toString, weakObj.toString, archivePath.toString
-      ]
-    }
-
 extern_lib «leanswe_postfork» pkg := do
   let oFile := pkg.buildDir / "c" / "postfork_shim.o"
   let cDir := pkg.dir / "LeanSwe" / "PostFork" / "c"
   let srcJob ← inputTextFile (cDir / "postfork_shim.c")
-  let hdrJob ← inputTextFile (cDir / "postfork.h")
   let fdBoxHdrJob ← inputTextFile (pkg.dir / "LeanSwe" / "LinuxSyscall" / "c" / "fd_box.h")
-  let depsJob := Job.collectArray #[srcJob, hdrJob, fdBoxHdrJob]
+  let depsJob := Job.collectArray #[srcJob, fdBoxHdrJob]
   let lean ← getLeanInstall
   let oJob ← buildO oFile (depsJob.map fun _ => cDir / "postfork_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let weakRustJob ← postfork_rust_weak_o.fetch
   let fdBoxJob ← buildFdBoxObj pkg "postfork"
   let name := nameToStaticLib "leanswe_postfork"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob, weakRustJob, fdBoxJob]
-
-extern_lib «leanswe_postfork_rust» := do
-  postfork_rust_archive.fetch
+  buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
