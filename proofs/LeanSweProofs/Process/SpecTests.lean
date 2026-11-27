@@ -772,10 +772,7 @@ def mkCapSimDeps : Internal.SysDepsM (StateM CapSimState) Nat where
         let outR := match spec.stdio with
           | .redirect _ (.handle outW) _ _ => outW - 1
           | _ => 0
-        (.ok { pid := 42, pgid := some 42 }, { s with outReadFd := outR })
-      spawnWithBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      releaseBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      abortBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" }) }
+        (.ok { pid := 42, pgid := some 42 }, { s with outReadFd := outR }) }
   listAmbientEnv := pure (.ok #["PATH=/bin".toUTF8])
 
 /-- On `maxOutputBytes = some 4`, `SysBridge.mkRawOpsM` truncates captured output to `4` bytes, sends `SIGTERM` and `SIGKILL` to `-pgid` (`-42`), reaps `pid = 42`, restores `activeProcessCount = 0`, and conserves ambient `openFds = [3, 4]` with zero leaked pipe FDs. -/
@@ -880,10 +877,7 @@ def mkPipeFailSimDeps : Internal.SysDepsM (StateM PipeFailSimState) Nat where
       getrandom := fun _ _ => pure (.ok ByteArray.empty) }
   postFork :=
     { spawn := fun _ => modifyGet fun s =>
-        (.ok { pid := 50, pgid := some 50 }, { s with postForkCalled := true })
-      spawnWithBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      releaseBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      abortBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" }) }
+        (.ok { pid := 50, pgid := some 50 }, { s with postForkCalled := true }) }
   listAmbientEnv := pure (.ok #["PATH=/bin".toUTF8])
 
 /-- When `pipe2` fails with `EMFILE` on either the 2nd or 3rd pipe pair, `SysBridge.spawnPure` closes every previously allocated pipe FD, never calls `postFork.spawn`, inserts no process-table slot, and conserves ambient `openFds = [5]`. -/
@@ -1106,10 +1100,7 @@ def mkSpawnAuditDeps : Internal.SysDepsM (StateM SpawnAuditState) Nat where
             spec.processGroup == .newGroup &&
             spec.sigpipe == .resetDefault &&
             spec.forkMode == .direct
-          (.ok { pid := 1, pgid := some 1 }, { s with childSpecExact := specOk })
-      spawnWithBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      releaseBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      abortBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" }) }
+          (.ok { pid := 1, pgid := some 1 }, { s with childSpecExact := specOk }) }
   listAmbientEnv := pure (.ok #[])
 
 /-- `SysBridge.mkRawOpsM` pre-validates `req.cwd` before `PATH` search (`ENOTDIR`, `EACCES`, `ENOENT`, `""`), enforces `O_CLOEXEC` pipes, `O_NONBLOCK` parent pipe ends, and isolated `ChildSpecM` (`processGroup = .newGroup`, `sigpipe = .resetDefault`, `forkMode = .direct`, exact `closeFds`), maps `pgid = 1` to `kill(1, ...)` rather than `0` or `-1`, and attributes post-fork `.chdir` errors to `req.cwd`. -/

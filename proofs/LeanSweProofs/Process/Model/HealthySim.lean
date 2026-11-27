@@ -328,10 +328,7 @@ def healthySimDeps : SysDepsM (StateM HealthySimState) Files.HandleId where
         (.ok { pid := 100, pgid := some 100 },
          { s with
            child100? := some zStatus
-           simFds := simFds' })
-      spawnWithBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      releaseBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      abortBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" }) }
+           simFds := simFds' }) }
   listAmbientEnv := pure (.ok #["PATH=/bin:/usr/bin".toUTF8])
 
 end LeanSwe.Process.Model.Internal

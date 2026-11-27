@@ -57,14 +57,6 @@ jobs:
           free -m
           df -h /
 
-      - name: Restore Lean packages cache
-        id: lake-pkgs-cache
-        if: steps.setup.outcome == 'success'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
-
       - name: Restore build folder cache
         id: lake-cache
         if: steps.setup.outcome == 'success'
@@ -112,62 +104,23 @@ jobs:
           lean -DwarningAsError=true --run scripts/CheckImports.lean --self-test 2>&1 | tee "$RUNNER_TEMP/check_imports.log"
           lean -DwarningAsError=true --run scripts/CheckImports.lean . 2>&1 | tee -a "$RUNNER_TEMP/check_imports.log"
 
-      - name: Install Rust toolchain, Charon, and Aeneas
-        id: rust_aeneas
-        if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.check_imports.outcome == 'success'
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
-            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum -c -
-            chmod +x "$RUNNER_TEMP/rustup-init" && "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH" && export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          (cd LeanSwe/PostFork/rust && rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install nightly-2026-09-17 --profile minimal --component rustc-dev llvm-tools rust-src)
-          mkdir -p "$RUNNER_TEMP/aeneas-dist"
-          curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/aeneas.tar.gz" https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.11.11-0d21a9e/aeneas-linux-x86_64.tar.gz
-          echo "471047623451a0bd8c885dbd63bb660d0168e23c5393cf184f884091ff7c9233  $RUNNER_TEMP/aeneas.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/aeneas.tar.gz" -C "$RUNNER_TEMP/aeneas-dist"
-          echo "$RUNNER_TEMP/aeneas-dist" >> "$GITHUB_PATH"
-
-      - name: Verify PostFork Rust build and Charon/Aeneas 0-diff extraction
-        id: postfork_extract
-        if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.check_imports.outcome == 'success' && steps.rust_aeneas.outcome == 'success'
-        run: |
-          set -euo pipefail
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
-          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone)
-          rm -rf "$RUNNER_TEMP/pf-regen"
-          mkdir -p "$RUNNER_TEMP/pf-regen"
-          (cd LeanSwe/PostFork/rust && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
-          aeneas -backend lean -split-files -subdir LeanSweProofs.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
-          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Types.lean"
-          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Funs.lean"
-
       - name: Run sandboxed lake check
         id: lake_check
         if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.check_imports.outcome == 'success'
         run: |
           set -euo pipefail
-          lake -d proofs exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail LeanSweProofs.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           PROOFS_EXPORT_FILE="$(mktemp "$RUNNER_TEMP/proofs-export.XXXXXX.ndjson")"
           trap 'rm -f "$PROOFS_EXPORT_FILE"' EXIT
           LEAN_PREFIX="$(lean --print-prefix)"
-          lake -d proofs env "$LEAN_PREFIX/bin/leanexport" LeanSweProofs LeanSweProofs.PostFork.Verified > "$PROOFS_EXPORT_FILE"
+          lake -d proofs env "$LEAN_PREFIX/bin/leanexport" LeanSweProofs > "$PROOFS_EXPORT_FILE"
           lake -d proofs check --from-export="$PROOFS_EXPORT_FILE" 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           rm -f "$PROOFS_EXPORT_FILE"
           trap - EXIT
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants UnitTests leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
-          expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
-          expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
           {
-            diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms")
-            diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u)
-            diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
+            diff -u <(printf '%s\n' leanswe_postfork_spawn) <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
             for b in leanswe-fuzz; do
               readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || {
                 echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2
@@ -175,13 +128,6 @@ jobs:
               }
             done
           } 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-
-      - name: Save Lean packages cache
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-pkgs-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
 
       - name: Save build folder cache
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
@@ -408,8 +354,6 @@ jobs:
           OUT_SETUP: ${{ steps.setup.outcome }}
           OUT_TOOLCHAIN: ${{ steps.toolchain.outcome }}
           OUT_IMPORTS: ${{ steps.check_imports.outcome }}
-          OUT_RUST: ${{ steps.rust_aeneas.outcome }}
-          OUT_EXTRACT: ${{ steps.postfork_extract.outcome }}
           OUT_CHECK: ${{ steps.lake_check.outcome }}
           OUT_MEM: ${{ steps.mem_check.outcome }}
           OUT_TEST: ${{ steps.repeat_tests.outcome }}
@@ -422,7 +366,7 @@ jobs:
           python3 -c '
           import os, pathlib, subprocess
           sha, repo, server, run_id = os.environ["GITHUB_SHA"], os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_RUN_ID"]
-          outcomes = ", ".join(f"{l}=`{os.environ[k]}`" for l, k in (("setup","OUT_SETUP"),("toolchain","OUT_TOOLCHAIN"),("check_imports","OUT_IMPORTS"),("rust","OUT_RUST"),("extract","OUT_EXTRACT"),("lake_check","OUT_CHECK"),("mem_check","OUT_MEM"),("repeat_tests","OUT_TEST"),("files_fuzz","OUT_FILES_FUZZ"),("verify_fuzz_cov","OUT_FUZZ_COV")))
+          outcomes = ", ".join(f"{l}=`{os.environ[k]}`" for l, k in (("setup","OUT_SETUP"),("toolchain","OUT_TOOLCHAIN"),("check_imports","OUT_IMPORTS"),("lake_check","OUT_CHECK"),("mem_check","OUT_MEM"),("repeat_tests","OUT_TEST"),("files_fuzz","OUT_FILES_FUZZ"),("verify_fuzz_cov","OUT_FUZZ_COV")))
           temp, tails = pathlib.Path(os.environ["RUNNER_TEMP"]), []
           for name in ("check_imports", "lake_check", "mem_check", "repeat_tests", "files_world_fuzz", "verify_fuzz_cov"):
               p = temp / f"{name}.log"

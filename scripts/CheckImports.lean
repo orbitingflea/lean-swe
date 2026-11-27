@@ -1007,7 +1007,7 @@ private def runSelfTests : IO UInt32 := do
     writeFileCreatingParents (walkDir / "harness/.lake/build/Bad.lean") "import Mathlib\n"
     writeFileCreatingParents (walkDir / ".lint-cache/Bad.lean") "import Mathlib\n"
     writeFileCreatingParents (walkDir / ".agents/Bad.lean") "import Mathlib\n"
-    writeFileCreatingParents (walkDir / "LeanSwe/PostFork/rust/target/Bad.lean") "import Mathlib\n"
+    writeFileCreatingParents (walkDir / "LeanSwe/Demo/rust/target/Bad.lean") "import Mathlib\n"
     runCmdOk tmpRoot "ln" #["-s", (outsideDir / "BadOutside.lean").toString, (walkDir / "Link.lean").toString]
     runCmdOk tmpRoot "ln" #["-s", outsideDir.toString, (walkDir / "LinkDir").toString]
     runCmdOk tmpRoot "ln" #["-s", ".", (walkDir / "SelfLoop").toString]

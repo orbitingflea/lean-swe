@@ -107,6 +107,5 @@ import LeanSwe.LinuxSyscall.Process.Impl
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.PostFork.Types
-import LeanSwe.PostFork.Types.Internal
 import LeanSwe.PostFork.Impl
 import LeanSwe.PostFork.Interface

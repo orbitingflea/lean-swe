@@ -16,29 +16,15 @@ inductive FdRef (fd : Type) where
   | raw (num : Int32)
   deriving Repr, BEq, DecidableEq
 
-/-- Argument token passed in `ChildSpecM.argv`, resolved atomically inside C while
-    managed `RawFd` handles remain pinned across `fork()`. -/
+/-- Literal NUL-free argument token passed in `ChildSpecM.argv`. -/
 inductive ArgToken (fd : Type) where
   /-- Literal NUL-free argument string. -/
   | lit (text : String)
-  /-- Decimal ASCII rendering of `fd` (e.g. `"5"`). -/
-  | fdDecimal (fd : FdRef fd)
-  /-- Decimal ASCII rendering of `fd` wrapped with NUL-free `prefixText` and `suffixText`
-      (e.g. `"/proc/self/fd/5"` or `"--plan-fd=5"`). -/
-  | prefixedFd (prefixText : String) (fd : FdRef fd) (suffixText : String := "")
   deriving Repr, BEq, DecidableEq
 
 /-- Construct a literal `ArgToken`. -/
 @[inline] def ArgToken.ofLiteral {fd : Type} (s : String) : ArgToken fd :=
   .lit s
-
-/-- Construct a decimal-FD `ArgToken` from a managed handle. -/
-@[inline] def ArgToken.ofHandle {fd : Type} (h : fd) : ArgToken fd :=
-  .fdDecimal (.handle h)
-
-/-- Construct a `"/proc/self/fd/<N>"` `ArgToken` from a managed handle. -/
-@[inline] def ArgToken.procSelfFd {fd : Type} (h : fd) : ArgToken fd :=
-  .prefixedFd "/proc/self/fd/" (.handle h) ""
 
 /-- Reaped `waitpid` termination status of a forked child process. -/
 inductive ChildWaitStatus where
@@ -50,29 +36,29 @@ inductive ChildWaitStatus where
 
 /-- Stage at which post-`fork` child setup failed prior to replacing the process image. -/
 inductive FailureStage where
-  /-- Pre-execution flag or descriptor validation failed (`EINVAL` or `EBADF`, wire tag `1`). -/
+  /-- Pre-execution flag or descriptor validation failed (`EINVAL` or `EBADF`, tag `1`). -/
   | validate
-  /-- `setpgid(0, 0)` failed (wire tag `2`). -/
+  /-- `setpgid(0, 0)` failed (tag `2`). -/
   | processGroup
-  /-- `rt_sigaction(SIGPIPE, SIG_DFL, NULL)` or `SIG_UNBLOCK` failed (wire tag `3`). -/
+  /-- `sigaction(SIGPIPE, SIG_DFL)` or `SIG_UNBLOCK` failed (tag `3`). -/
   | signalReset
-  /-- Open-FD probe, `rep_w` relocation, `setup_stdio`, or `FD_CLOEXEC` toggle failed (wire tag `4`). -/
+  /-- Stdio redirection or `FD_CLOEXEC` clearing failed (tag `4`). -/
   | fdSetup
-  /-- `close_fds_above2_except` (`close_range` + `/proc/self/fd` fallback) failed (wire tag `5`). -/
+  /-- Closing inherited descriptors `>= 3` failed (tag `5`). -/
   | closeUnkept
-  /-- `chdir(cwd)` failed (wire tag `6`). -/
+  /-- `chdir(cwd)` failed (tag `6`). -/
   | chdir
-  /-- `execve(path, argv, envp)` failed (wire tag `7`). -/
+  /-- `execve(path, argv, envp)` failed (tag `7`). -/
   | execve
-  /-- Host read a truncated, overlong, or malformed frame on the failure report pipe. -/
+  /-- Host read a truncated, overlong, or malformed packet on the error pipe. -/
   | wireTruncated
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Decoded post-`fork` child failure report written by `libpostfork.a` before `_exit(127)`. -/
+/-- Decoded post-`fork` child failure report written by `postfork_shim.c` before `_exit(127)`. -/
 structure ChildFailure where
   /-- Exact post-`fork` phase that failed. -/
   stage : FailureStage
-  /-- Strictly positive Linux `errno` (`1..4095`; `EIO` on truncated/malformed wire payload). -/
+  /-- Strictly positive Linux `errno` (`1..4095`; `EIO` on malformed wire payload). -/
   errno : Errno
   /-- Reaped child `waitpid` status (normally `some (.exited 127)`). -/
   waitStatus : Option ChildWaitStatus := none
@@ -80,9 +66,9 @@ structure ChildFailure where
 
 /-- Coarse error classification returned by `LeanSwe.PostFork` host operations. -/
 inductive PostForkErrorKind where
-  /-- Pre-`fork` caller input error (empty `path`, embedded NUL, bad `env` key, negative raw FD, or overlapping descriptors). -/
+  /-- Pre-`fork` caller input error (empty `path`, embedded NUL, bad `env` key, negative raw FD, non-empty `keepFds`, or overlapping descriptors). -/
   | invalidInput
-  /-- Host OS failure during handle pinning, probing, `pipe2`, `fork`, `write`, `read`, or `waitpid`. -/
+  /-- Host OS failure during handle pinning, probing, `pipe2`, `fork`, `read`, or `waitpid`. -/
   | sysError
   /-- Child forked successfully but failed post-`fork` before `execve` (already reaped). -/
   | childFailed
@@ -90,7 +76,7 @@ inductive PostForkErrorKind where
 
 /-- Structured error value returned by `LeanSwe.PostFork` host operations. -/
 structure PostForkError where
-  /-- Coarse error classification covered by `errorCoverage`. -/
+  /-- Coarse error classification covered by central error-coverage checks. -/
   kind : PostForkErrorKind
   /-- Optional positive Linux `errno` associated with this error. -/
   errno : Option Errno := none
@@ -102,21 +88,18 @@ structure PostForkError where
 
 /-- How standard descriptors `0`, `1`, and `2` are configured in the child. -/
 inductive StdioPlan (fd : Type) where
-  /-- Leave inherited `0`, `1`, `2` untouched (no `dup2`, no `relocate_rep_above2`). -/
+  /-- Leave inherited `0`, `1`, `2` untouched. -/
   | inherit
   /-- Atomically route `(stdin, stdout, stderr)` onto `(0, 1, 2)` without clobbering swaps or 3-cycles,
-      clearing `FD_CLOEXEC` on `0..2`. When `closeSourcesAbove2 = true` and `fdPolicy` is `.inheritNonCloexec`,
-      source descriptors `> 2` are closed after `dup2`. -/
+      clearing `FD_CLOEXEC` on `0..2`. All descriptors `>= 3` are closed before `execve`. -/
   | redirect (stdin stdout stderr : FdRef fd) (closeSourcesAbove2 : Bool := true)
   deriving Repr, BEq, DecidableEq
 
-/-- Policy for descriptors `> 2` across `execve`. -/
+/-- Policy for descriptors `> 2` across `execve` (all descriptors `>= 3` are closed by the shim; `keepFds` must be empty). -/
 inductive FdPolicy (fd : Type) where
-  /-- Preserve open non-`O_CLOEXEC` descriptors (close only explicit `closeFds` and redirected stdio sources `> 2` if requested).
-      Any `keepFds` listed are verified open via `F_GETFD` and have `FD_CLOEXEC` cleared. -/
+  /-- Close all descriptors `>= 3` across `execve` (`keepFds` must be `#[]`). -/
   | inheritNonCloexec (keepFds : Array (FdRef fd) := #[])
-  /-- Verify every descriptor in `keepFds` is open, clear `FD_CLOEXEC` on `keepFds`, and close all other
-      descriptors `> 2` via gap-wise `close_range` with `/proc/self/fd` `getdents64` fallback. -/
+  /-- Close all descriptors `>= 3` across `execve` (`keepFds` must be `#[]`). -/
   | closeAllAbove2Except (keepFds : Array (FdRef fd) := #[])
   deriving Repr, BEq, DecidableEq
 
@@ -136,13 +119,10 @@ inductive SigpipePolicy where
   | resetDefault
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Host `fork()` execution thread policy supporting `PR_SET_PDEATHSIG`-safe children. -/
+/-- Host `fork()` execution policy (direct single-shot `fork()` on the caller's thread). -/
 inductive ForkMode where
   /-- Invoke `fork()` directly on the caller's OS thread. -/
   | direct
-  /-- Invoke `fork()` from a dedicated immortal spawner pthread so transient Lean worker-thread exit
-      cannot prematurely trigger `PR_SET_PDEATHSIG` in the child. -/
-  | immortalThread
   deriving Repr, BEq, DecidableEq, Inhabited
 
 /-- Caller-agnostic post-`fork` child specification parameterized over descriptor handle type `fd`. -/
@@ -162,15 +142,15 @@ structure ChildSpecM (fd : Type) where
   rawEnv : Array ByteArray := #[]
   /-- Standard descriptor (`0`, `1`, `2`) setup policy. -/
   stdio : StdioPlan fd := .inherit
-  /-- Unkept descriptor (`> 2`) handling and kept-FD `FD_CLOEXEC` clearing policy. -/
+  /-- Unkept descriptor (`> 2`) policy (`keepFds` must be empty; all fds `>= 3` are closed). -/
   fdPolicy : FdPolicy fd := .inheritNonCloexec #[]
-  /-- Descriptors to close unconditionally in the child before probing or waiting on the sync barrier. -/
+  /-- Descriptors `>= 3` closed before `execve` (all descriptors `>= 3` are closed unconditionally). -/
   closeFds : Array (FdRef fd) := #[]
   /-- Process group policy (`setpgid`). -/
   processGroup : ProcessGroupPolicy := .inherit
   /-- `SIGPIPE` disposition policy prior to `execve`. -/
   sigpipe : SigpipePolicy := .resetDefault
-  /-- Host `fork()` thread policy (`.immortalThread` for `PR_SET_PDEATHSIG` children). -/
+  /-- Host `fork()` execution policy. -/
   forkMode : ForkMode := .direct
   deriving BEq, DecidableEq
 
@@ -199,7 +179,7 @@ abbrev ChildSpec := ChildSpecM RawFd
 def ChildSpecM.ofCommand {fd : Type} (path : String) (args : Array String := #[]) : ChildSpecM fd :=
   { path := path, argv := (#[ArgToken.lit path] ++ args.map ArgToken.lit) }
 
-/-- Live running child returned after `execve` has succeeded (failure report pipe observed EOF). -/
+/-- Live running child returned after `execve` has succeeded (error pipe observed EOF). -/
 structure SpawnedChild where
   /-- Positive child PID. -/
   pid : Pid
@@ -207,44 +187,29 @@ structure SpawnedChild where
   pgid : Option Pid := none
   deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Child paused at the pre-`execve` sync barrier (returned by `spawnWithBarrier`).
-    Caller must consume via `releaseBarrier` or `abortBarrier` exactly once. -/
-structure PendingChildM (fd : Type) where
-  /-- Positive child PID (already placed in its own pgid when `processGroup == .newGroup`). -/
-  pid : Pid
-  /-- `some pid` when `processGroup == .newGroup`, else `none`. -/
-  pgid : Option Pid := none
-  /-- Internal parent write end of the 1-byte sync barrier pipe (`O_CLOEXEC`). -/
-  syncWrite : fd
-  /-- Internal parent read end of the 8-byte failure report pipe (`O_CLOEXEC`). -/
-  errRead : fd
-  deriving Repr, BEq, DecidableEq
+/-- Raw failure returned by the trusted single-shot C spawn shim (`leanswe_postfork_spawn`). -/
+inductive RawSpawnErr where
+  /-- Host-side OS error during pinning, probing, `pipe2`, `fork`, `read`, or `waitpid`. -/
+  | sys (errno : Errno)
+  /-- Child failed post-`fork` and was already reaped with `wait`. -/
+  | child (wait : ChildWaitStatus) (stageTag : UInt32) (errno : Errno)
+  deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Real-world `IO` specialization of `PendingChildM` backed by ABA-safe `RawFd` pipe handles. -/
-abbrev PendingChild := PendingChildM RawFd
+/-- Low-level single-shot spawn capability bundle backed by `leanswe_postfork_spawn`. -/
+structure RawSpawnOpsM (m : Type → Type) (fd : Type) where
+  /-- Pin stdio handles, create an `O_CLOEXEC` error pipe, `fork`, wire stdio, close all fds `>= 3`,
+      optionally `setpgid`/`SIGPIPE`/`chdir`, call `execve`, and either return the live PID or reap and return `RawSpawnErr`. -/
+  spawnRaw :
+    UInt32 →
+    FdRef fd → FdRef fd → FdRef fd →
+    Option String → String → Array String → Array ByteArray →
+    m (Except RawSpawnErr Pid)
 
-/-- Outcome returned by `abortBarrier` after closing the sync barrier without releasing. -/
-inductive AbortOutcome where
-  /-- Child observed EOF on the sync barrier and terminated (normally `.exited 125`). -/
-  | aborted (wait : ChildWaitStatus)
-  /-- Child failed before reaching the sync barrier and wrote a failure report. -/
-  | failedBeforeBarrier (failure : ChildFailure) (wait : ChildWaitStatus)
-  deriving Repr, BEq, DecidableEq
-
-/-- Public caller-agnostic monadic capability bundle for `LeanSwe.PostFork` (zero Aeneas or Mathlib types). -/
+/-- Public caller-agnostic monadic capability bundle for `LeanSwe.PostFork`. -/
 structure PostForkOpsM (m : Type → Type) (fd : Type) where
-  /-- Validate `spec`, fork, run post-`fork` child setup without a sync barrier, verify `execve` via EOF,
+  /-- Validate `spec`, fork, run post-`fork` child setup, verify `execve` via EOF,
       and return the live `SpawnedChild` (reaping automatically on failure). -/
   spawn : ChildSpecM fd → m (Except PostForkError SpawnedChild)
-  /-- Validate `spec`, fork, pause child at the 1-byte sync barrier after `setpgid`, `closeFds`, and FD probing,
-      and return `PendingChildM fd` for parent-side setup (e.g. `cgroup.procs` and `pidfd_open`). -/
-  spawnWithBarrier : ChildSpecM fd → m (Except PostForkError (PendingChildM fd))
-  /-- Write the 1-byte release token (`EPIPE`-safe if child failed early), close barrier/report pipes,
-      verify `execve` via EOF, and return `SpawnedChild` (reaping automatically on failure). -/
-  releaseBarrier : PendingChildM fd → m (Except PostForkError SpawnedChild)
-  /-- Close the sync barrier without writing a token, drain any pre-barrier failure report,
-      reap the child (`_exit(125)` on clean abort), and return `AbortOutcome`. -/
-  abortBarrier : PendingChildM fd → m (Except PostForkError AbortOutcome)
 
 /-- Real-world `IO` specialization of `PostForkOpsM`. -/
 abbrev PostForkOps := PostForkOpsM IO RawFd

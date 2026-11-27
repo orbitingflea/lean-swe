@@ -82,13 +82,6 @@ jobs:
           free -m
           df -h /
 
-      - name: Restore Lean packages cache
-        id: lake-pkgs-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
-
       - name: Restore build folder cache
         id: lake-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
@@ -130,65 +123,20 @@ jobs:
           lean -DwarningAsError=true --run scripts/CheckImports.lean --self-test
           lean -DwarningAsError=true --run scripts/CheckImports.lean .
 
-      - name: Install Rust toolchain, Charon, and Aeneas
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
-            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum -c -
-            chmod +x "$RUNNER_TEMP/rustup-init" && "$RUNNER_TEMP/rustup-init" -y --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH" && export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          (cd LeanSwe/PostFork/rust && rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install nightly-2026-09-17 --profile minimal --component rustc-dev llvm-tools rust-src)
-          mkdir -p "$RUNNER_TEMP/aeneas-dist"
-          curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 180 -o "$RUNNER_TEMP/aeneas.tar.gz" https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.11.11-0d21a9e/aeneas-linux-x86_64.tar.gz
-          echo "471047623451a0bd8c885dbd63bb660d0168e23c5393cf184f884091ff7c9233  $RUNNER_TEMP/aeneas.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/aeneas.tar.gz" -C "$RUNNER_TEMP/aeneas-dist" && echo "$RUNNER_TEMP/aeneas-dist" >> "$GITHUB_PATH"
-
-      - name: Verify PostFork Rust build and Charon/Aeneas 0-diff extraction
-        run: |
-          set -euo pipefail
-          rm -rf "$RUNNER_TEMP/pf-regen"
-          mkdir -p "$RUNNER_TEMP/pf-regen"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/pf-cargo-target"
-          (cd LeanSwe/PostFork/rust && cargo build --locked --release --features standalone && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
-          aeneas -backend lean -split-files -subdir LeanSweProofs.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
-          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Types.lean"
-          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Funs.lean"
-
       - name: Build Lean libraries and tests
         id: build
         run: |
           set -euo pipefail
-          lake -d proofs exe cache get
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail LeanSweProofs.PostFork.Verified
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants UnitTests leanswe-fuzz
-          actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
-          expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
-          expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
-          diff -u <(printf '%s\n' "$expected_syms") <(printf '%s\n' "$actual_syms")
-          diff -u <(printf '%s\n' leanswe_postfork_close_fds_above2_except leanswe_postfork_run_child) <(nm --defined-only .lake/build/lib/libleanswe_postfork_rust.a | awk '$2 ~ /^[A-Z]$/ { print $3 }' | sort -u)
-          diff -u <(printf '%s\n' "$expected_c_syms") <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
+          diff -u <(printf '%s\n' leanswe_postfork_spawn) <(nm --defined-only .lake/build/lib/libleanswe_postfork.a | awk '$2 ~ /^[ABCDGRST]$/ { print $3 }' | sort -u)
           for b in leanswe-fuzz; do
             readelf -d "harness/.lake/build/bin/$b" | grep -E '^[[:space:]]*0x[0-9a-fA-F]+[[:space:]]+(\(BIND_NOW\)([[:space:]]|$)|\(FLAGS\)[[:space:]](.*[[:space:]])?BIND_NOW([[:space:]]|$)|\(FLAGS_1\)[[:space:]](.*[[:space:]])?NOW([[:space:]]|$))' >/dev/null || {
               echo "ERROR: harness/.lake/build/bin/$b missing ELF BIND_NOW" >&2
               exit 1
             }
           done
-
-      - name: Save Lean packages cache
-        if: >-
-          !cancelled() &&
-          steps.lake-pkgs-cache.outputs.cache-hit != 'true' &&
-          steps.build.outcome == 'success' &&
-          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
 
       - name: Save build folder cache
         if: >-

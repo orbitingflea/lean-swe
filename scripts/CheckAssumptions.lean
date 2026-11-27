@@ -2581,27 +2581,12 @@ unsafe def main (args : List String) : IO UInt32 := do
     unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
       IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
       return 1
-  let hasProofsVerifiedSrc ←
-    if hasProofsTree then (proofsLeanSweDir / "PostFork" / "Verified.lean").pathExists else pure false
-  let hasRootVerifiedSrc ← (leanSweDir / "PostFork" / "Verified.lean").pathExists
-  let hasPostForkVerifiedSrc := hasProofsVerifiedSrc || hasRootVerifiedSrc
-  let verifiedMod :=
-    if hasProofsVerifiedSrc then `LeanSweProofs.PostFork.Verified else `LeanSwe.PostFork.Verified
-  if hasPostForkVerifiedSrc then
-    let vOlean :=
-      if hasProofsVerifiedSrc then proofsLibDir / "LeanSweProofs" / "PostFork" / "Verified.olean"
-      else libDir / "LeanSwe" / "PostFork" / "Verified.olean"
-    unless ← vOlean.pathExists do
-      IO.eprintln s!"MISSING_OLEAN: {verifiedMod} ({vOlean})"
-      return 1
   Lean.enableInitializersExecution
   let searchPaths := if hasProofsTree then [proofsLibDir, libDir] else [libDir]
   initSearchPath (← findSysroot) searchPaths
   let mut rootImports : Array Import := #[{ module := `LeanSwe }]
   if hasProofsTree then
     rootImports := rootImports.push { module := `LeanSweProofs }
-  if hasPostForkVerifiedSrc then
-    rootImports := rootImports.push { module := verifiedMod }
   let env ← importModules rootImports {} (loadExts := true)
   let transImpsOf := buildTransitiveImportFn env
 

@@ -245,10 +245,7 @@ noncomputable def simFullSysCaps : Internal.ProcessSysCapsM (StateM (SimCellWorl
   postFork :=
     { spawn := fun _ (((hs, env), tbl), step) =>
         (.ok { pid := 100, pgid := some 100 },
-         ((({ hs with child100? := some (.exited 0) }, env), tbl), step))
-      spawnWithBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      releaseBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" })
-      abortBarrier := fun _ => pure (.error { kind := .invalidInput, message := "unused" }) }
+         ((({ hs with child100? := some (.exited 0) }, env), tbl), step)) }
   envRaw :=
     { mapRawError := EnvVars.Raw.Model.mapRawErrorModel
       getEnv := fun key (((hs, env), tbl), step) =>
