@@ -4,7 +4,7 @@ import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.PostFork.Types
-import LeanSwe.EnvVars.Raw.Types
+import LeanSwe.EnvVars.Types
 import LeanSwe.Process.Types
 
 /-! Internal `SysBridge` and host-capability data shapes shared across `LeanSwe.Process`. -/
@@ -40,8 +40,8 @@ structure ProcessSysCapsM (m : Type → Type) where
   timeRand : LeanSwe.LinuxSyscall.TimeRand.TimeRandOpsM m
   /-- Verified post-`fork` child setup and `execve` capability bundle. -/
   postFork : LeanSwe.PostFork.PostForkOpsM m LeanSwe.LinuxSyscall.RawFd
-  /-- Verified raw `environ(7)` capability bundle (`EnvVars.Raw.defaultOpsBase`). -/
-  envRaw : LeanSwe.EnvVars.Raw.RawEnvVarsBundleM m
+  /-- Verified `environ(7)` capability bundle (`EnvVars.defaultApi`). -/
+  envRaw : LeanSwe.EnvVars.EnvVarsApiM m
 
 /-- Per-process slot tracked between `spawn`, `awaitOutput`, `killProcessGroup`, and `reap`. -/
 structure ProcSlotM (fd : Type) where

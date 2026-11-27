@@ -394,7 +394,7 @@ theorem sysBridge_mkRawOpsM_refines_host {W : Type} (proj : W → Model.ProcessH
       rw [hCntRun] at hCnt
       exact ⟨hCnt.1, hS, hostWorldWf_implies_processStateWf hCnt.1, hCnt.2.1, hCnt.2.2⟩
 
-/-- End-to-end `Impl + SysBridge` capability refinement over `Model.HealthyHostCapsM` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`, and handle table). -/
+/-- End-to-end `Impl + SysBridge` capability refinement over `Model.HealthyHostCapsM` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars`, and handle table). -/
 theorem refinesStepFrom_mkApiFromHostCapsM :
     Core.ObeysStepFrom id Model.hostWorldWf
       Model.execHostCapStep Model.allowedHostCapStep

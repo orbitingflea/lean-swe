@@ -130,7 +130,7 @@ theorem sysPreservesFrame_of_obeysStep {W CellT : Type}
         rw [hostStateT_map_run] at h; exact h
       listEnvironBytes := fun w hw => by
         have h := stepInv (.envRaw .listEnvironBytes) w hw
-        dsimp only [Model.execFullRawStep, EnvVars.Raw.Model.execPkgStep] at h
+        dsimp only [Model.execFullRawStep, EnvVars.Model.execPkgStep] at h
         rw [hostStateT_map_run, hostStateT_map_run] at h; exact h }
 
 theorem fullRetryEintr_frame {W α : Type} {inv : W → Prop} {frame : W → W → Prop}

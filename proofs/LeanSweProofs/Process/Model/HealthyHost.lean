@@ -15,7 +15,7 @@ import LeanSweProofs.Process.Model
 /-!
 Healthy-OS capability boundary and world-state specification for `LeanSwe.Process`
 covering `Impl + SysBridge` end-to-end over imported dependency interfaces
-(`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, and `EnvVars.Raw`).
+(`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, and `EnvVars`).
 -/
 
 namespace LeanSwe.Process.Model
@@ -261,7 +261,7 @@ inductive HostCapStepReq where
   | timeRand (req : LinuxSyscall.TimeRand.TimeRandReq)
   /-- Verified `PostFork.spawn` child launch. -/
   | postFork (spec : PostFork.ChildSpecM LinuxSyscall.Files.HandleId)
-  /-- Ambient `environ(7)` byte snapshot (`EnvVars.Raw.listEnvironBytes`). -/
+  /-- Ambient `environ(7)` byte snapshot (`EnvVars.listEnvironBytes`). -/
   | listAmbientEnv
   /-- Active process handle table operation. -/
   | table (req : HostTableReq)

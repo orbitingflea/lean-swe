@@ -248,6 +248,7 @@ private def stubEnv : EnvVarsApiM (StateM TempDirStubState) :=
       else return .ok none
     listEnv := pure (.ok #[])
     homeDir := pure (.ok "/var/user")
+    listEnvironBytes := pure #[]
     splitSearchPath := fun _ => #[] }
 
 private def stubFsEx : FsApiM (ExceptT String (StateM TempDirStubState)) :=
@@ -351,6 +352,7 @@ private def stubEnvEx : EnvVarsApiM (ExceptT String (StateM TempDirStubState)) :
     getEnv := fun k => liftM (stubEnv.getEnv k)
     listEnv := liftM stubEnv.listEnv
     homeDir := liftM stubEnv.homeDir
+    listEnvironBytes := liftM stubEnv.listEnvironBytes
     splitSearchPath := stubEnv.splitSearchPath }
 
 private def noopTempDirBuilder {m : Type → Type} [Monad m] : TempDirBuilder m :=

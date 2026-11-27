@@ -21,6 +21,7 @@ noncomputable def modelHostCaps :
         getEnv := fun key => ExceptT.mk fun s => (.ok (LeanSwe.EnvVars.Model.getEnvModel s.env key), s)
         listEnv := ExceptT.mk fun s => (.ok (LeanSwe.EnvVars.Model.listEnvModel s.env), s)
         homeDir := ExceptT.mk fun s => (.ok (LeanSwe.EnvVars.Model.homeDirModel s.env), s)
+        listEnvironBytes := ExceptT.mk fun s => (.ok s.env.entries, s)
         splitSearchPath := LeanSwe.EnvVars.Model.splitSearchPathModel }
     files :=
       { openat := fun _ _ _ _ => unimplHostFilesOp

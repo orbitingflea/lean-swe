@@ -481,7 +481,7 @@ def mockUuid : UuidApiM (StateM TempDirMockState) :=
 /-- Mock `EnvVarsApiM` over `StateM TempDirMockState`. -/
 def mockEnv : EnvVarsApiM (StateM TempDirMockState) :=
   { mapRawError := fun _ => { kind := .ioError, message := "env" }, getEnv := fun k => do if k == "TMPDIR" then return .ok (← get).tmpdir else return .ok none
-    listEnv := pure (.ok #[]), homeDir := pure (.ok "/mock/user"), splitSearchPath := fun _ => #[] }
+    listEnv := pure (.ok #[]), homeDir := pure (.ok "/mock/user"), listEnvironBytes := pure #[], splitSearchPath := fun _ => #[] }
 /-- Mock `FsApiM` lifted to `ExceptT String (StateM TempDirMockState)` with exception-safe locking. -/
 def mockFsEx : FsApiM (ExceptT String (StateM TempDirMockState)) :=
   { join := mockFs.join, joinMany := mockFs.joinMany, normPath := mockFs.normPath, parent := mockFs.parent, name := mockFs.name, stem := mockFs.stem, suffix := mockFs.suffix, suffixes := mockFs.suffixes
@@ -504,7 +504,7 @@ def mockUuidEx : UuidApiM (ExceptT String (StateM TempDirMockState)) :=
     parse := mockUuid.parse, parseHex := mockUuid.parseHex, isValid := mockUuid.isValid, getUuid := liftM mockUuid.getUuid }
 /-- Mock `EnvVarsApiM` lifted to `ExceptT String (StateM TempDirMockState)`. -/
 def mockEnvEx : EnvVarsApiM (ExceptT String (StateM TempDirMockState)) :=
-  { mapRawError := mockEnv.mapRawError, getEnv := fun k => liftM (mockEnv.getEnv k), listEnv := liftM mockEnv.listEnv, homeDir := liftM mockEnv.homeDir, splitSearchPath := mockEnv.splitSearchPath }
+  { mapRawError := mockEnv.mapRawError, getEnv := fun k => liftM (mockEnv.getEnv k), listEnv := liftM mockEnv.listEnv, homeDir := liftM mockEnv.homeDir, listEnvironBytes := liftM mockEnv.listEnvironBytes, splitSearchPath := mockEnv.splitSearchPath }
 /-- Pure mock capability bundle backed by `TempDirMockState`. -/
 def modelCaps : TempDirCaps (StateM TempDirMockState) := { fs := mockFs, time := mockTime, uuid := mockUuid, env := mockEnv }
 /-- Minimal `FsApiM` non-`.lock` child-removal loop passed inside `tryLockRemoveCallback`. -/

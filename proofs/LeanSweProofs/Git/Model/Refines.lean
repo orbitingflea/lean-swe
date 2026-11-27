@@ -40,10 +40,10 @@ def mapProcessErrorModel (cmd : String) (e : ProcessError) : GitError :=
 /-- Pure capability container bundling `EnvVarsApiM m` and `ProcessApiM m` for `LeanSwe.Git`. -/
 abbrev GitHostCapsM := LeanSwe.Git.Internal.GitHostCapsM
 
-/-- Combined abstract host state pairing `EnvVars.Raw.Model.EnvironState` with `Process.Model.ProcessModelState`. -/
+/-- Combined abstract host state pairing `EnvVars.Model.EnvironState` with `Process.Model.ProcessModelState`. -/
 structure GitHostState where
   /-- Ambient process environment snapshot model. -/
-  env : LeanSwe.EnvVars.Raw.Model.EnvironState := {}
+  env : LeanSwe.EnvVars.Model.EnvironState := {}
   /-- Active child-process handle lifecycle state. -/
   proc : LeanSwe.Process.Model.ProcessModelState := {}
   deriving Inhabited

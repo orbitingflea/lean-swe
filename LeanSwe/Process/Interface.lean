@@ -5,7 +5,7 @@ import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.PostFork.Interface
-import LeanSwe.EnvVars.Raw.Interface
+import LeanSwe.EnvVars.Interface
 import LeanSwe.Process.Types
 import LeanSwe.Process.Types.Internal
 import LeanSwe.Process.Impl
@@ -15,7 +15,7 @@ namespace LeanSwe.Process
 
 private initialize gProcTable : IO.Ref (Internal.ProcTableState LeanSwe.LinuxSyscall.RawFd) ← IO.mkRef {}
 
-/-- Default `ProcessApi` wired directly over `LinuxSyscall.{Process,Files,Poll,TimeRand}.defaultOps`, `PostFork.defaultOps`, `EnvVars.Raw.defaultOpsBase`, `Core.ioConcOps`, and `Core.ioStateCell`. -/
+/-- Default `ProcessApi` wired directly over `LinuxSyscall.{Process,Files,Poll,TimeRand}.defaultOps`, `PostFork.defaultOps`, `EnvVars.defaultApi`, `Core.ioConcOps`, and `Core.ioStateCell`. -/
 def defaultApi : ProcessApi :=
   Internal.mkFullApiM
     { proc := LeanSwe.LinuxSyscall.Process.defaultOps
@@ -23,7 +23,7 @@ def defaultApi : ProcessApi :=
       poll := LeanSwe.LinuxSyscall.Poll.defaultOps
       timeRand := LeanSwe.LinuxSyscall.TimeRand.defaultOps
       postFork := LeanSwe.PostFork.defaultOps
-      envRaw := LeanSwe.EnvVars.Raw.defaultOpsBase }
+      envRaw := LeanSwe.EnvVars.defaultApi }
     Core.ioConcOps
     (Core.ioStateCell gProcTable)
 

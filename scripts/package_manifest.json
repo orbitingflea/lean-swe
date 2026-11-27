@@ -50,16 +50,6 @@
     "LeanSwe.EnvVars": {
       "kind": "model",
       "purity": "mixed",
-      "deps": [
-        "LeanSwe.EnvVars.Raw"
-      ],
-      "fuzz_suite": "envvars",
-      "external_boundary": false,
-      "spec_style": "state_step"
-    },
-    "LeanSwe.EnvVars.Raw": {
-      "kind": "model",
-      "purity": "nondet_io",
       "deps": [],
       "fuzz_suite": "envvars",
       "external_boundary": true,
@@ -173,7 +163,7 @@
       "kind": "model",
       "purity": "nondet_io",
       "deps": [
-        "LeanSwe.EnvVars.Raw",
+        "LeanSwe.EnvVars",
         "LeanSwe.LinuxSyscall.Common",
         "LeanSwe.LinuxSyscall.Files",
         "LeanSwe.LinuxSyscall.Poll",

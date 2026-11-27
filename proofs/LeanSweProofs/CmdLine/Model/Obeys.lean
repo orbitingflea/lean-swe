@@ -31,8 +31,8 @@ def errnoToIoErrorModel (e : LeanSwe.LinuxSyscall.Errno) : IO.Error :=
 def mapEnvVarsErrorModel (err : LeanSwe.EnvVars.EnvVarsError) : CmdLineError :=
   { kind := .ioError, message := err.message, target := err.key }
 
-/-- Pure `CliOpsM.getEnv` behavior over `EnvVars.Raw.Model.EnvironState`. -/
-def lookupHostEnv (s : LeanSwe.EnvVars.Raw.Model.EnvironState) (key : String) :
+/-- Pure `CliOpsM.getEnv` behavior over `EnvVars.Model.EnvironState`. -/
+def lookupHostEnv (s : LeanSwe.EnvVars.Model.EnvironState) (key : String) :
     Except CmdLineError (Option String) :=
   (LeanSwe.EnvVars.Model.getEnvModel s key).mapError mapEnvVarsErrorModel
 
@@ -53,8 +53,8 @@ inductive HostStdioFault where
 
 /-- Combined abstract host state for `LeanSwe.CmdLine` over `LinuxSyscall.Files` and `EnvVars`. -/
 structure CmdLineHostState where
-  /-- Ambient process environment snapshot (`LeanSwe.EnvVars.Raw.Model.EnvironState`). -/
-  env : LeanSwe.EnvVars.Raw.Model.EnvironState := {}
+  /-- Ambient process environment snapshot (`LeanSwe.EnvVars.Model.EnvironState`). -/
+  env : LeanSwe.EnvVars.Model.EnvironState := {}
   /-- Unread raw bytes queued on standard input (`fd 0`). -/
   stdinBytes : List UInt8 := []
   /-- Accumulated raw bytes written to standard output (`fd 1`). -/

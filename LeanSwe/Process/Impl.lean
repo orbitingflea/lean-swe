@@ -209,7 +209,7 @@ def mkApiFromCapsM {m : Type → Type} [Monad m] {fd : Type}
       listAmbientEnv := Except.ok <$> cap.listEnvironBytes }
   mkApiM (SysBridge.mkRawOpsM deps cap.table)
 
-/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over `HealthyHostCapsM m` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars.Raw`). -/
+/-- Construct a `ProcessApiM m` composing `Impl` and `SysBridge` over `HealthyHostCapsM m` (`LinuxSyscall.{Process,Files,Poll,TimeRand}`, `PostFork`, `EnvVars`). -/
 def mkApiFromHostCapsM {m : Type → Type} [Monad m]
     (cap : HealthyHostCapsM m) : ProcessApiM m :=
   mkApiFromCapsM cap
