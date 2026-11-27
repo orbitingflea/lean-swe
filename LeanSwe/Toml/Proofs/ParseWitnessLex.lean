@@ -82,6 +82,7 @@ private theorem normalizeCharsAux_witness :
               .error (mkErr .invalidUtf8OrControl "disallowed control character in TOML input" (some line) (some col))
              else normalizeCharsAux line (col + 1) (c :: acc) rest) := by
           (conv => lhs; unfold normalizeCharsAux); split <;> (subst_vars; simp_all)
+          rfl
         rw [hstep] at h
         cases hctrl : isDisallowedControl c
         · rw [hctrl] at h; simp only [Bool.false_eq_true, ↓reduceIte] at h
@@ -481,7 +482,7 @@ private theorem takeBareKeyChars_witness :
   | c :: rest, acc => by
     unfold takeBareKeyChars
     by_cases hbk : isBareKeyChar c = true
-    · simp only [hbk, ↓reduceIte]
+    · simp only [isBareKeyCharImpl_eq, hbk, ↓reduceIte]
       obtain ⟨ksTail, h1, h2, h3⟩ := takeBareKeyChars_witness rest (c :: acc)
       exact ⟨c :: ksTail, by simpa [List.reverse_cons, List.append_assoc] using h1,
         congrArg (c :: ·) h2, by simp [hbk, h3]⟩

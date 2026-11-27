@@ -44,6 +44,12 @@ theorem mkApiM_withLockedTempDir_eq {m : Type → Type} {α : Type} [Monad m] [M
 theorem mkApiM_cleanupStaleTempDirs_eq {m : Type → Type} [Monad m] [MonadFinally m]
     (fs : FsApiM m) (time : TimeOpsM m) (uuid : UuidApiM m) (env : EnvVarsApiM m) (root? : Option String) (dirPrefix : String) (maxAgeSec : Nat) :
     (Internal.mkApiM fs time uuid env).cleanupStaleTempDirs root? dirPrefix maxAgeSec = Internal.cleanupStaleTempDirsM fs time env root? dirPrefix maxAgeSec := rfl
+theorem internal_insertSorted_eq (x : String) : ∀ xs, Internal.insertSorted x xs = insertSorted x xs
+  | [] => rfl
+  | y :: ys => by simp only [Internal.insertSorted, insertSorted, internal_insertSorted_eq x ys]
+@[simp] theorem internal_sortStrings_eq : ∀ xs, Internal.sortStrings xs = sortStrings xs
+  | [] => rfl
+  | x :: xs => by simp only [Internal.sortStrings, sortStrings, internal_insertSorted_eq, internal_sortStrings_eq xs]
 theorem mem_insertSorted (x y : String) (xs : List String) : y ∈ insertSorted x xs ↔ y = x ∨ y ∈ xs := by
   induction xs with | nil => simp [insertSorted] | cons z zs ih => simp only [insertSorted]; split <;> simp [List.mem_cons, ih, or_left_comm]
 private theorem pairwise_insertSorted (x : String) (xs : List String) (h : List.Pairwise (· ≤ ·) xs) : List.Pairwise (· ≤ ·) (insertSorted x xs) := by

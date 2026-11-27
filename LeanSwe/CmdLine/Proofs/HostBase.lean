@@ -1,9 +1,52 @@
 import Core.Obeys
+import LeanSwe.CmdLine.Model
+import LeanSwe.CmdLine.Model.Obeys
 import LeanSwe.CmdLine.Interface
 
 namespace LeanSwe.CmdLine.Proofs
 
 open Core LeanSwe.CmdLine LeanSwe.LinuxSyscall
+
+@[simp] theorem sysBridge_mkStdioIoError_eq (msg : String) :
+    SysBridge.mkStdioIoError msg = Model.mkStdioIoError msg := rfl
+@[simp] theorem sysBridge_errnoToIoError_eq (e : Errno) :
+    SysBridge.errnoToIoError e = Model.errnoToIoErrorModel e := rfl
+@[simp] theorem sysBridge_mapEnvVarsError_eq (err : LeanSwe.EnvVars.EnvVarsError) :
+    SysBridge.mapEnvVarsError err = Model.mapEnvVarsErrorModel err := rfl
+private theorem sysBridge_skipUtf8_go_eq (bs : ByteArray) :
+    ∀ pos fuel, SysBridge.skipUtf8ContinuationBytes.go bs pos fuel = Model.skipUtf8ContinuationBytes.go bs pos fuel
+  | _, 0 => rfl
+  | pos, fuel + 1 => by
+    unfold SysBridge.skipUtf8ContinuationBytes.go Model.skipUtf8ContinuationBytes.go
+    have hc : ∀ b, SysBridge.isUtf8ContinuationByte b = Model.isUtf8ContinuationByte b := fun _ => rfl
+    simp only [hc]
+    split
+    · split
+      · exact sysBridge_skipUtf8_go_eq bs (pos + 1) fuel
+      · rfl
+    · rfl
+@[simp] theorem sysBridge_skipUtf8ContinuationBytes_eq (bs : ByteArray) (i : Nat) :
+    SysBridge.skipUtf8ContinuationBytes bs i = Model.skipUtf8ContinuationBytes bs i :=
+  sysBridge_skipUtf8_go_eq bs i (bs.size - i)
+private theorem sysBridge_decodeUtf8_go_eq (bs : ByteArray) :
+    ∀ pos fuel accRev, SysBridge.decodeUtf8LossyLean.go bs pos fuel accRev = Model.decodeUtf8LossyLean.go bs pos fuel accRev
+  | _, 0, _ => rfl
+  | pos, fuel + 1, accRev => by
+    unfold SysBridge.decodeUtf8LossyLean.go Model.decodeUtf8LossyLean.go
+    dsimp only
+    split
+    · rfl
+    · have hv : SysBridge.validateUtf8OneWidth bs pos = Model.validateUtf8OneWidth bs pos := rfl
+      rw [hv]
+      cases Model.validateUtf8OneWidth bs pos with
+      | some p => exact sysBridge_decodeUtf8_go_eq bs (pos + p.2) fuel (Char.ofNat p.1 :: accRev)
+      | none =>
+        rw [sysBridge_skipUtf8ContinuationBytes_eq]
+        exact sysBridge_decodeUtf8_go_eq bs (Model.skipUtf8ContinuationBytes bs (pos + 1)) fuel (Char.ofNat 0xFFFD :: accRev)
+@[simp] theorem sysBridge_decodeUtf8LossyLean_eq (bs : ByteArray) :
+    SysBridge.decodeUtf8LossyLean bs = Model.decodeUtf8LossyLean bs := by
+  unfold SysBridge.decodeUtf8LossyLean Model.decodeUtf8LossyLean
+  rw [sysBridge_decodeUtf8_go_eq]
 
 /-- Evaluate `pure` in `ExceptT IO.Error (StateM W)`. -/
 theorem exceptT_run_pure {W α : Type} (a : α) (w : W) :

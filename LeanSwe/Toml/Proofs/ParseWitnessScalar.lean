@@ -90,7 +90,7 @@ theorem parseDatePart_witness {cs rest : List Char} {d : Std.Time.PlainDate}
       injection hcal with heq; subst heq; exact ⟨rfl, rfl, rfl⟩
     refine ⟨padNatZero 4 date.year.toNat ++ "-" ++ padNatZero 2 date.month.val.toNat ++ "-" ++
         padNatZero 2 date.day.val.toNat,
-      by simp [renderDate, hvd], ?_⟩
+      by simp [renderDate, show validTomlDate date = true from hvd], ?_⟩
     simp [String.toList_append, hfields.1, hfields.2.1, hfields.2.2,
       padNatZero_4_of_fourDigits hy, padNatZero_2_of_twoDigits hm, padNatZero_2_of_twoDigits hd]
   · nomatch h

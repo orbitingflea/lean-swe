@@ -385,12 +385,8 @@ def evalPkgStep (s : TempDirMockState) : PkgStepReq → PkgStepOut × TempDirMoc
 def allowedPkgStep (s : TempDirMockState) (req : PkgStepReq) (out : PkgStepOut) (s' : TempDirMockState) : Prop :=
   let r := evalPkgStep s req; out = r.1 ∧ s' = r.2
 namespace Internal
-/-- Bundled lower-layer capability interfaces consumed internally by `LeanSwe.TempDir`. -/
-structure TempDirCaps (m : Type → Type) where
-  /-- Filesystem capability interface. -/ fs : FsApiM m
-  /-- Clock/sleep capability interface. -/ time : TimeOpsM m
-  /-- UUID capability interface. -/ uuid : UuidApiM m
-  /-- Environment-variable capability interface. -/ env : EnvVarsApiM m
+/-- Alias of `LeanSwe.TempDir.Internal.TempDirCaps` retained for model/proof compatibility. -/
+abbrev TempDirCaps := LeanSwe.TempDir.Internal.TempDirCaps
 /-- Pure recursive directory removal in `StateM TempDirMockState`. -/
 def mockRmtreePure (p : String) (ignoreMissing : Bool) : StateM TempDirMockState (Except FsError Unit) := do
   let s ← get; let rp := normKey p

@@ -355,7 +355,7 @@ private theorem cleanupStaleTempDirs_refines_spec {W : Type} (proj : W → TempD
               cases hSRun : (Internal.sweepEntries caps.fs root dirPrefix maxAgeSec (proj w).nowSec {} names.toList).run w3 with
               | mk repFin w4 =>
                 rw [hSRun] at hSw; dsimp only at hSw; rw [hW3] at hSw
-                dsimp only; rw [hSw.1]; exact ⟨rfl, hSw.2⟩
+                dsimp only; rw [hSw.1]; simp only [internal_sortStrings_eq]; exact ⟨rfl, hSw.2⟩
   · have hVpF : specValidPrefix dirPrefix = false := Bool.eq_false_iff.mpr hVp
     simp only [show Internal.validPrefix dirPrefix = false from hVpF, hVpF, Bool.not_false, ↓reduceIte]; exact ⟨rfl, rfl⟩
 /-- Compositional single-step refinement lemma for `LeanSwe.TempDir.Internal.mkApiFromCapsM`. -/

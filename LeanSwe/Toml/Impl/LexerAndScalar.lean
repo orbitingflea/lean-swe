@@ -1,14 +1,27 @@
 import LeanSwe.Toml.Types
-import LeanSwe.Toml.Model
 import LeanSwe.NumParse.Types
-import LeanSwe.NumParse.Model
 
 namespace LeanSwe.Toml.Impl
 
 open LeanSwe.Toml
-open LeanSwe.Toml.Model
 open LeanSwe.NumParse
-open LeanSwe.NumParse.Model
+
+/-- Check whether `c` is an ASCII bare-key character `[A-Za-z0-9_-]`. -/
+def isBareKeyCharImpl (c : Char) : Bool :=
+  ('A' ≤ c && c ≤ 'Z') || ('a' ≤ c && c ≤ 'z') || ('0' ≤ c && c ≤ '9') || c == '_' || c == '-'
+
+/-- Check whether `c` is a disallowed TOML 1.0 control character (`U+0000..U+0008`, `U+000B`, `U+000C`, `U+000E..U+001F`, `U+007F`). -/
+def isDisallowedControlImpl (c : Char) : Bool :=
+  let n := c.toNat
+  n ≤ 0x08 || n == 0x0B || n == 0x0C || (0x0E ≤ n && n ≤ 0x1F) || n == 0x7F
+
+/-- Check RFC 3339 4-digit year bounds (`0000..9999`) for a `Std.Time.PlainDate`. -/
+def validTomlDateImpl (d : Std.Time.PlainDate) : Bool :=
+  decide (0 ≤ d.year ∧ d.year ≤ 9999)
+
+/-- Check RFC 3339 minute-granularity offset bounds (`±23:59`, multiple of 60 seconds). -/
+def validTomlOffsetImpl (o : Std.Time.TimeZone.Offset) : Bool :=
+  decide (o.second.val % 60 = 0 ∧ -86340 ≤ o.second.val ∧ o.second.val ≤ 86340)
 
 /-- Ensure error diagnostic messages are always non-empty. -/
 def nonEmptyMsg (msg : String) : String :=
@@ -29,7 +42,7 @@ def normalizeCharsAux (line col : Nat) (acc : List Char) : List Char → Except 
   | '\n' :: rest =>
     normalizeCharsAux (line + 1) 1 ('\n' :: acc) rest
   | c :: rest =>
-    if isDisallowedControl c then
+    if isDisallowedControlImpl c then
       .error (mkErr .invalidUtf8OrControl "disallowed control character in TOML input" (some line) (some col))
     else
       normalizeCharsAux line (col + 1) (c :: acc) rest
@@ -195,7 +208,7 @@ def parseMultilineLiteralString (cs : List Char) : Except TomlError (String × L
 /-- Consume leading ASCII bare-key characters `[A-Za-z0-9_-]`. -/
 def takeBareKeyChars (acc : List Char) : List Char → List Char × List Char
   | c :: rest =>
-    if isBareKeyChar c then takeBareKeyChars (c :: acc) rest
+    if isBareKeyCharImpl c then takeBareKeyChars (c :: acc) rest
     else (acc.reverse, c :: rest)
   | [] => (acc.reverse, [])
 
@@ -285,7 +298,7 @@ def parseDatePart : List Char → Except TomlError (Std.Time.PlainDate × List C
               (Std.Time.Month.Ordinal.ofNat m hm)
               (Std.Time.Day.Ordinal.ofNat d hd) with
           | some date =>
-            if validTomlDate date then .ok (date, rest)
+            if validTomlDateImpl date then .ok (date, rest)
             else .error (mkErr .parseError "RFC 3339 date year out of TOML range")
           | none => .error (mkErr .parseError "invalid calendar date in RFC 3339 literal")
         else .error (mkErr .parseError "invalid day in RFC 3339 date")
@@ -339,7 +352,7 @@ def parseOffsetPart : List Char → Except TomlError Std.Time.TimeZone.Offset
           let total : Int := Int.ofNat (hh * 3600 + mm * 60)
           let sec : Int := if total == 0 then 0 else if sign == '-' then -total else total
           let off := Std.Time.TimeZone.Offset.ofSeconds (Std.Time.Second.Offset.ofInt sec)
-          if validTomlOffset off then .ok off
+          if validTomlOffsetImpl off then .ok off
           else .error (mkErr .parseError "RFC 3339 offset out of range")
         else .error (mkErr .parseError "RFC 3339 offset hour/minute out of range")
       | _, _ => .error (mkErr .parseError "invalid digits in RFC 3339 offset")

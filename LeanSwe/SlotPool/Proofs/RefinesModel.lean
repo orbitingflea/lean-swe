@@ -197,7 +197,7 @@ private theorem scanSlotsM_refines_spec {W : Type} (proj : W → PoolSimState)
       raw_fsJoin_eq proj fs hFs w poolDir (slotFileName nextIdx)
     have hCb : (do return Except.ok (← (pure (evalStepAction nextIdx act) : StateM W (Except SlotPoolError Nat)))) =
         (pure (.ok (evalStepAction nextIdx act)) : StateM W (Except FsError (Except SlotPoolError Nat))) := rfl
-    rw [stateM_bind_run, hLp, hCb]
+    rw [stateM_bind_run, internal_slotLockPath_eq, hLp, hCb]
     let lp := slotLockPath simJoin poolDir nextIdx
     have hTry := raw_fsTryLockRet_eq proj fs hFs w s hs lp .exclusive true (evalStepAction nextIdx act)
     cases hTRun : (fs.tryWithFileLock lp .exclusive true (pure (.ok (evalStepAction nextIdx act)))).run w with
@@ -206,7 +206,7 @@ private theorem scanSlotsM_refines_spec {W : Type} (proj : W → PoolSimState)
       dsimp only [specTryLockRet] at hTry
       cases hAcq : simTryAcquirePure s lp .exclusive true with
       | error fe =>
-        rw [hAcq] at hTry; rw [hTry.1]; exact ⟨rfl, hTry.2⟩
+        rw [hAcq] at hTry; rw [hTry.1]; exact ⟨congrArg Except.error (internal_mapFsError_eq fe), hTry.2⟩
       | ok opt =>
         cases opt with
         | none =>
@@ -269,7 +269,7 @@ private theorem pollWaitUpToM_refines_spec {W : Type} (proj : W → PoolSimState
             · rw [if_true_eq _ _ hGe, if_true_eq _ _ hGe]
               exact ⟨rfl, hNow2⟩
             · rw [if_false_eq _ _ hGe, if_false_eq _ _ hGe]
-              rw [stateM_bind_run]
+              rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq, internal_nextSleepMs_eq]
               let dur := nextSleepMs cfg.pollIntervalMs sSc.monoNanos deadlineNs
               have hSlp := runSleepChunks_refines_duration proj time hTime dur wNow sSc hNow2
               cases hSlpRun : (runSleepChunks time (sleepChunks dur)).run wNow with
@@ -319,7 +319,7 @@ private theorem pollForeverM_refines_spec {W : Type} (proj : W → PoolSimState)
           dsimp only [scanOutcomeToExcept] at hSc
           rw [← hSc.1]
           dsimp only
-          rw [stateM_bind_run]
+          rw [stateM_bind_run, internal_runSleepChunks_eq, internal_sleepChunks_eq]
           have hSlp := runSleepChunks_refines_duration proj time hTime cfg.pollIntervalMs wSc sSc hSc.2
           cases hSlpRun : (runSleepChunks time (sleepChunks cfg.pollIntervalMs)).run wSc with
           | mk _ wSlept =>
@@ -336,6 +336,7 @@ private theorem withSlotM_refines_spec {W : Type} (proj : W → PoolSimState)
     let sp := specWithSlot (proj w) cfg policy act
     r.1 = sp.1 ∧ proj r.2 = sp.2 := by
   dsimp only [Internal.withSlotM, specWithSlot]
+  rw [internal_validatePoolConfig_eq]
   cases validatePoolConfig cfg with
   | error e => exact ⟨rfl, rfl⟩
   | ok _ =>
@@ -350,7 +351,7 @@ private theorem withSlotM_refines_spec {W : Type} (proj : W → PoolSimState)
       | error fe =>
         rw [hPureMk] at hMk
         rcases hMk with ⟨rfl, hMk2⟩
-        exact ⟨rfl, hMk2⟩
+        exact ⟨congrArg Except.error (internal_mapFsError_eq fe), hMk2⟩
       | ok s1 =>
         rw [hPureMk] at hMk
         rcases hMk with ⟨rfl, hMk2⟩
@@ -371,9 +372,12 @@ private theorem withSlotM_refines_spec {W : Type} (proj : W → PoolSimState)
           | mk startNs w2 =>
             rw [hNRun] at hNow
             rcases hNow with ⟨rfl, hNow2⟩
+            dsimp only
+            rw [internal_deadlineNanos_eq, internal_maxForeverPolls_eq]
             exact pollWaitUpToM_refines_spec proj fs time hFs hTime cfg
               (deadlineNanos s1.monoNanos timeoutMs) act maxForeverPolls w2 s1 hNow2
         | waitForever =>
+          rw [internal_maxForeverPolls_eq]
           exact pollForeverM_refines_spec proj fs time hFs hTime cfg act maxForeverPolls w1 s1 hMk2
 
 /-- Compositional single-step refinement lemma for `LeanSwe.SlotPool.mkApiM`. -/

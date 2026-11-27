@@ -1,10 +1,251 @@
 import LeanSwe.Tar.Types
-import LeanSwe.Tar.Model
 
 namespace LeanSwe.Tar.Impl
 
 open LeanSwe.Tar
-open LeanSwe.Tar.Model
+
+/-- Upper exclusive bound for 64-bit unsigned metadata fields (`2^64`). -/
+def u64LimitImpl : Nat := 18446744073709551616
+
+/-- Upper exclusive bound for 32-bit unsigned mode fields (`2^32`). -/
+def u32LimitImpl : Nat := 4294967296
+
+/-- Upper exclusive bound for USTAR 7-digit octal fields `uid` and `gid` (`2^21`). -/
+def ustarOctal7LimitImpl : Nat := 2097152
+
+/-- Upper exclusive bound for USTAR 11-digit octal fields `size` and `mtime` (`2^33`). -/
+def ustarOctal11LimitImpl : Nat := 8589934592
+
+/-- Round byte count `n` up to the next 512-byte tar block boundary. -/
+def pad512Impl (n : Nat) : Nat :=
+  ((n + 511) / 512) * 512
+
+/-- Zero non-deterministic metadata fields (`uid`, `gid`, `mtime`, `uname`, `gname`). -/
+def zeroDeterministicMetaImpl (e : TarEntry) : TarEntry :=
+  { e with uid := 0, gid := 0, mtime := 0, uname := "", gname := "" }
+
+/-- Return `true` iff `cs` contains a NUL character (`Char.ofNat 0`). -/
+def hasNulCharsImpl : List Char → Bool
+  | [] => false
+  | c :: cs => c == Char.ofNat 0 || hasNulCharsImpl cs
+
+/-- Return `true` iff `s` contains a NUL character (`'\x00'`). -/
+def hasNulStringImpl (s : String) : Bool :=
+  hasNulCharsImpl s.toList
+
+/-- Return `true` iff every byte in `s.toUTF8` is pure 7-bit ASCII (`< 0x80`). -/
+def isAsciiStringImpl (s : String) : Bool :=
+  s.toUTF8.toList.all (fun b => b < 0x80)
+
+/-- Split `cs` on `'/'` into `'/'`-separated character segments (`""` yields `[]`). -/
+def splitSlashCharsImpl : List Char → List (List Char)
+  | [] => []
+  | cs => go [] cs
+where
+  /-- Accumulate the current segment in reverse order until `'/'` or end of list. -/
+  go (acc : List Char) : List Char → List (List Char)
+    | [] => [acc.reverse]
+    | '/' :: rest => acc.reverse :: go [] rest
+    | c :: rest => go (c :: acc) rest
+
+/-- Strip all trailing `'/'` characters from `cs`. -/
+def stripTrailingSlashesCharsImpl (cs : List Char) : List Char :=
+  (cs.reverse.dropWhile (· == '/')).reverse
+
+/-- Validate `'/'`-split segments for empty, `"."`, and `".."` violations. -/
+def checkSegmentsImpl (allowParentTraversal : Bool) (segs : List (List Char)) :
+    Except TarError Unit :=
+  match segs with
+  | [] => .error { kind := .invalidPath, message := "empty tar entry path" }
+  | _ => go segs
+where
+  /-- Inspect each segment for empty, `"."`, and `".."` violations. -/
+  go : List (List Char) → Except TarError Unit
+    | [] => .ok ()
+    | seg :: rest =>
+      if seg.isEmpty then
+        .error { kind := .invalidPath, message := "empty path segment in tar entry path" }
+      else if seg == ['.'] then
+        .error { kind := .unsafePath, message := "'.' path segment is not allowed" }
+      else if seg == ['.', '.'] && !allowParentTraversal then
+        .error { kind := .unsafePath, message := "'..' path segment is not allowed" }
+      else
+        go rest
+
+/-- Validate and normalize an entry path in exact 5-step precedence. -/
+def validateEntryPathImpl (allowAbsolute allowParentTraversal : Bool)
+    (kind : EntryKind) (path : String) : Except TarError String :=
+  let cs := path.toList
+  if hasNulCharsImpl cs then
+    .error { kind := .invalidPath, message := "tar path contains NUL byte", entryPath := some path }
+  else if cs.isEmpty then
+    .error { kind := .invalidPath, message := "tar path is empty", entryPath := some path }
+  else
+    let startsSlash := cs.head? == some '/'
+    if startsSlash && !allowAbsolute then
+      .error { kind := .unsafePath, message := "absolute tar path is not allowed", entryPath := some path }
+    else
+      let normChars? : Except TarError (List Char) :=
+        match kind with
+        | .directory =>
+          let stripped := stripTrailingSlashesCharsImpl cs
+          if stripped.isEmpty then
+            .error { kind := .invalidPath, message := "directory tar path cannot be root-only", entryPath := some path }
+          else
+            .ok stripped
+        | .regular | .symlink =>
+          if cs.reverse.head? == some '/' then
+            .error { kind := .invalidPath, message := "non-directory tar path cannot end with '/'", entryPath := some path }
+          else
+            .ok cs
+      match normChars? with
+      | .error e => .error e
+      | .ok normChars =>
+        let relChars := match normChars with | '/' :: rest => rest | other => other
+        let segs := splitSlashCharsImpl relChars
+        match checkSegmentsImpl allowParentTraversal segs with
+        | .error e => .error { e with entryPath := some path }
+        | .ok () => .ok (String.ofList normChars)
+
+/-- Validate a symbolic link target against `entryPath` and policy flags. -/
+def validateSymlinkTargetImpl (allowAbsolute allowParentTraversal : Bool)
+    (entryPath linkTarget : String) : Except TarError Unit :=
+  let targetCs := linkTarget.toList
+  if targetCs.isEmpty then
+    .error { kind := .invalidPath, message := "symlink target is empty", entryPath := some entryPath }
+  else if hasNulCharsImpl targetCs then
+    .error { kind := .invalidPath, message := "symlink target contains NUL byte", entryPath := some entryPath }
+  else
+    let startsSlash := targetCs.head? == some '/'
+    if startsSlash && !allowAbsolute then
+      .error { kind := .unsafePath, message := "absolute symlink target is not allowed", entryPath := some entryPath }
+    else if allowParentTraversal then
+      .ok ()
+    else
+      let normEntry := match entryPath.toList with | '/' :: rest => rest | other => other
+      let entrySegs := splitSlashCharsImpl normEntry
+      let parentDepth := entrySegs.length - 1
+      let targetSegs := splitSlashCharsImpl (match targetCs with | '/' :: rest => rest | other => other)
+      walkDepth parentDepth targetSegs
+where
+  /-- Walk `linkTarget` segments from `parentDepth`, failing immediately if `".."` escapes above depth `0`. -/
+  walkDepth (depth : Nat) : List (List Char) → Except TarError Unit
+    | [] => .ok ()
+    | seg :: rest =>
+      if seg.isEmpty || seg == ['.'] then
+        walkDepth depth rest
+      else if seg == ['.', '.'] then
+        if depth == 0 then
+          .error { kind := .unsafePath, message := "symlink target escapes archive root", entryPath := some entryPath }
+        else
+          walkDepth (depth - 1) rest
+      else
+        walkDepth (depth + 1) rest
+
+/-- Wire path emitted for an entry (`normPath ++ "/"` for directories, `normPath` otherwise). -/
+def wirePathOfImpl (kind : EntryKind) (normPath : String) : String :=
+  match kind with
+  | .directory => normPath ++ "/"
+  | .regular | .symlink => normPath
+
+/-- Find a valid USTAR split `(prefix, name)` at `'/'` with `1 ≤ prefix.bytes ≤ 155` and `1 ≤ name.bytes ≤ 100`. -/
+def findUstarSplitImpl (wirePath : String) : Option (String × String) :=
+  let cs := wirePath.toList
+  go [] cs
+where
+  /-- Scan `'/'` boundaries left-to-right for the first valid `(prefix, name)` USTAR split. -/
+  go (revPrefix : List Char) : List Char → Option (String × String)
+    | [] => none
+    | '/' :: rest =>
+      let pfx := String.ofList revPrefix.reverse
+      let nm := String.ofList rest
+      if !pfx.isEmpty && !nm.isEmpty && pfx.toUTF8.size ≤ 155 && nm.toUTF8.size ≤ 100 then
+        some (pfx, nm)
+      else
+        go ('/' :: revPrefix) rest
+    | c :: rest => go (c :: revPrefix) rest
+
+/-- Return `true` iff `wirePath` fits in pure USTAR (`name ≤ 100` or valid `prefix`/`name` split) and is ASCII. -/
+def pathFitsUstarImpl (wirePath : String) : Bool :=
+  isAsciiStringImpl wirePath &&
+  (wirePath.toUTF8.size ≤ 100 || (findUstarSplitImpl wirePath).isSome)
+
+/-- Return `true` iff an entry requires a PAX `'x'` extended header for any field. -/
+def needsPaxImpl (e : TarEntry) (wirePath : String) : Bool :=
+  !pathFitsUstarImpl wirePath ||
+  !isAsciiStringImpl e.linkTarget || e.linkTarget.toUTF8.size > 100 ||
+  !isAsciiStringImpl e.uname || e.uname.toUTF8.size > 32 ||
+  !isAsciiStringImpl e.gname || e.gname.toUTF8.size > 32 ||
+  e.uid ≥ ustarOctal7LimitImpl ||
+  e.gid ≥ ustarOctal7LimitImpl ||
+  e.data.size ≥ ustarOctal11LimitImpl ||
+  e.mtime ≥ ustarOctal11LimitImpl
+
+/-- Compute decimal ASCII digits count for a positive `Nat`. -/
+def decDigitsLenImpl (n : Nat) : Nat :=
+  (toString n).toUTF8.size
+
+/-- Fixed-point total PAX record byte length `<len> <key>=<value>\n` given `kvBodyLen`. -/
+def paxRecordTotalLenImpl (kvBodyLen : Nat) : Nat :=
+  go 1 20
+where
+  /-- Search for the fixed point `len = decDigitsLenImpl len + kvBodyLen`. -/
+  go (digits : Nat) : Nat → Nat
+    | 0 => digits + kvBodyLen
+    | fuel + 1 =>
+      let cand := digits + kvBodyLen
+      let actual := decDigitsLenImpl cand
+      if actual == digits then cand else go actual fuel
+
+/-- Encode a single UTF-8 PAX extended header record `"<len> <key>=<value>\n"`. -/
+def encodePaxRecordImpl (key value : String) : ByteArray :=
+  let suffix := " " ++ key ++ "=" ++ value ++ "\n"
+  let totalLen := paxRecordTotalLenImpl suffix.toUTF8.size
+  (toString totalLen ++ suffix).toUTF8
+
+/-- Encode all PAX `'x'` records needed for an entry whose wire path is `wirePath`. -/
+def buildPaxPayloadImpl (e : TarEntry) (wirePath : String) : ByteArray :=
+  let rPath := if !pathFitsUstarImpl wirePath then encodePaxRecordImpl "path" wirePath else ByteArray.empty
+  let rLink :=
+    if e.kind == .symlink && (!isAsciiStringImpl e.linkTarget || e.linkTarget.toUTF8.size > 100) then
+      encodePaxRecordImpl "linkpath" e.linkTarget
+    else
+      ByteArray.empty
+  let rUname :=
+    if !isAsciiStringImpl e.uname || e.uname.toUTF8.size > 32 then
+      encodePaxRecordImpl "uname" e.uname
+    else
+      ByteArray.empty
+  let rGname :=
+    if !isAsciiStringImpl e.gname || e.gname.toUTF8.size > 32 then
+      encodePaxRecordImpl "gname" e.gname
+    else
+      ByteArray.empty
+  let rSize := if e.data.size ≥ ustarOctal11LimitImpl then encodePaxRecordImpl "size" (toString e.data.size) else ByteArray.empty
+  let rMtime := if e.mtime ≥ ustarOctal11LimitImpl then encodePaxRecordImpl "mtime" (toString e.mtime) else ByteArray.empty
+  let rUid := if e.uid ≥ ustarOctal7LimitImpl then encodePaxRecordImpl "uid" (toString e.uid) else ByteArray.empty
+  let rGid := if e.gid ≥ ustarOctal7LimitImpl then encodePaxRecordImpl "gid" (toString e.gid) else ByteArray.empty
+  rPath ++ rLink ++ rUname ++ rGname ++ rSize ++ rMtime ++ rUid ++ rGid
+
+/-- Return a 512-byte all-zero block. -/
+def zeroBlockImpl : ByteArray :=
+  ByteArray.mk (Array.replicate 512 0)
+
+/-- Encode `val` as `digits` zero-padded lowercase octal ASCII bytes followed by `0x00`. -/
+def encodeOctalFieldImpl (val digits : Nat) : ByteArray :=
+  let rec loop (k v : Nat) (acc : List UInt8) : List UInt8 :=
+    match k with
+    | 0 => acc
+    | k' + 1 =>
+      let d : UInt8 := UInt8.ofNat (0x30 + (v % 8))
+      loop k' (v / 8) (d :: acc)
+  ByteArray.mk ((loop digits val [0]).toArray)
+
+/-- Pad a `ByteArray` with `0x00` bytes to a 512-byte boundary. -/
+def padBlock512Impl (bs : ByteArray) : ByteArray :=
+  let rem := bs.size % 512
+  if rem == 0 then bs
+  else bs ++ ByteArray.mk (Array.replicate (512 - rem) 0)
 
 /-- Pad or truncate `bs` to exact byte width `width`, right-padding with `0x00`. -/
 def padRightBytes (width : Nat) (bs : ByteArray) : ByteArray :=
@@ -29,11 +270,11 @@ where
 def buildUstarHeader (name : String) (mode : UInt32) (uid gid size mtime : Nat)
     (typeflag : UInt8) (linkname uname gname pfx : String) : ByteArray :=
   let fName := padRightBytes 100 name.toUTF8
-  let fMode := encodeOctalField (mode &&& 0o7777).toNat 7
-  let fUid := encodeOctalField uid 7
-  let fGid := encodeOctalField gid 7
-  let fSize := encodeOctalField size 11
-  let fMtime := encodeOctalField mtime 11
+  let fMode := encodeOctalFieldImpl (mode &&& 0o7777).toNat 7
+  let fUid := encodeOctalFieldImpl uid 7
+  let fGid := encodeOctalFieldImpl gid 7
+  let fSize := encodeOctalFieldImpl size 11
+  let fMtime := encodeOctalFieldImpl mtime 11
   let fChkSpaces := ByteArray.mk (Array.replicate 8 0x20)
   let fType := ByteArray.mk #[typeflag]
   let fLink := padRightBytes 100 linkname.toUTF8
@@ -47,7 +288,7 @@ def buildUstarHeader (name : String) (mode : UInt32) (uid gid size mtime : Nat)
   let hdrPre := fName ++ fMode ++ fUid ++ fGid ++ fSize ++ fMtime ++ fChkSpaces ++
     fType ++ fLink ++ fMagic ++ fVer ++ fUname ++ fGname ++ fDev ++ fPrefix ++ fPad
   let chk := ustarChecksumAt hdrPre 0
-  let fChk := encodeOctalField chk 6 ++ ByteArray.mk #[0x20]
+  let fChk := encodeOctalFieldImpl chk 6 ++ ByteArray.mk #[0x20]
   fName ++ fMode ++ fUid ++ fGid ++ fSize ++ fMtime ++ fChk ++
     fType ++ fLink ++ fMagic ++ fVer ++ fUname ++ fGname ++ fDev ++ fPrefix ++ fPad
 
@@ -57,55 +298,55 @@ def asciiFallback (s : String) (maxChars : Nat) : String :=
 
 /-- Encode a single validated entry into USTAR (and optional PAX `'x'`) tar blocks. -/
 def encodeEntryBlocks (e : TarEntry) (normPath : String) : ByteArray :=
-  let wp := wirePathOf e.kind normPath
+  let wp := wirePathOfImpl e.kind normPath
   let typeByte : UInt8 :=
     match e.kind with
     | .regular => 0x30
     | .directory => 0x35
     | .symlink => 0x32
   let entryBlocks :=
-    if !needsPax e wp then
+    if !needsPaxImpl e wp then
       let (pfx, nm) :=
         if wp.toUTF8.size ≤ 100 then ("", wp)
         else
-          match findUstarSplit wp with
+          match findUstarSplitImpl wp with
           | some pair => pair
           | none => ("", wp)
       let hdr := buildUstarHeader nm e.mode e.uid e.gid e.data.size e.mtime typeByte e.linkTarget e.uname e.gname pfx
-      hdr ++ padBlock512 e.data
+      hdr ++ padBlock512Impl e.data
     else
-      let paxPayload := buildPaxPayload e wp
+      let paxPayload := buildPaxPayloadImpl e wp
       let paxHdr := buildUstarHeader "././@PaxHeader" 0o644 0 0 paxPayload.size 0 0x78 "" "" "" ""
       let (fbPrefix, fbName) :=
-        if !pathFitsUstar wp then ("", asciiFallback wp 100)
+        if !pathFitsUstarImpl wp then ("", asciiFallback wp 100)
         else if wp.toUTF8.size ≤ 100 then ("", wp)
-        else match findUstarSplit wp with
+        else match findUstarSplitImpl wp with
           | some pair => pair
           | none => ("", asciiFallback wp 100)
       let fbLink := if e.kind == .symlink then asciiFallback e.linkTarget 100 else ""
       let fbUname := asciiFallback e.uname 32
       let fbGname := asciiFallback e.gname 32
-      let fbUid := if e.uid < ustarOctal7Limit then e.uid else 0
-      let fbGid := if e.gid < ustarOctal7Limit then e.gid else 0
-      let fbSize := if e.data.size < ustarOctal11Limit then e.data.size else 0
-      let fbMtime := if e.mtime < ustarOctal11Limit then e.mtime else 0
+      let fbUid := if e.uid < ustarOctal7LimitImpl then e.uid else 0
+      let fbGid := if e.gid < ustarOctal7LimitImpl then e.gid else 0
+      let fbSize := if e.data.size < ustarOctal11LimitImpl then e.data.size else 0
+      let fbMtime := if e.mtime < ustarOctal11LimitImpl then e.mtime else 0
       let hdr := buildUstarHeader fbName e.mode fbUid fbGid fbSize fbMtime typeByte fbLink fbUname fbGname fbPrefix
-      paxHdr ++ padBlock512 paxPayload ++ hdr ++ padBlock512 e.data
+      paxHdr ++ padBlock512Impl paxPayload ++ hdr ++ padBlock512Impl e.data
   entryBlocks
 
 /-- Validate a single entry for `packWith` and return its canonical normalized path. -/
 def validatePackEntry (opts : PackOptions) (e : TarEntry) : Except TarError String := do
-  let normPath ← validateEntryPath opts.allowAbsolute opts.allowParentTraversal e.kind e.path
+  let normPath ← validateEntryPathImpl opts.allowAbsolute opts.allowParentTraversal e.kind e.path
   match e.kind with
-  | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath e.linkTarget
+  | .symlink => validateSymlinkTargetImpl opts.allowAbsolute opts.allowParentTraversal normPath e.linkTarget
   | .regular | .directory => pure ()
   if e.kind != .regular && e.data.size != 0 then
     throw { kind := .invalidHeader, message := "non-regular tar entry cannot have payload data", entryPath := some e.path }
   else if e.kind != .symlink && e.linkTarget != "" then
     throw { kind := .invalidHeader, message := "non-symlink tar entry cannot have linkTarget", entryPath := some e.path }
-  else if hasNulString e.uname || hasNulString e.gname then
+  else if hasNulStringImpl e.uname || hasNulStringImpl e.gname then
     throw { kind := .invalidHeader, message := "uname/gname cannot contain NUL byte", entryPath := some e.path }
-  else if e.uid ≥ u64Limit || e.gid ≥ u64Limit || e.mtime ≥ u64Limit || e.data.size ≥ u64Limit then
+  else if e.uid ≥ u64LimitImpl || e.gid ≥ u64LimitImpl || e.mtime ≥ u64LimitImpl || e.data.size ≥ u64LimitImpl then
     throw { kind := .sizeOverflow, message := "tar entry numeric field exceeds 2^64 - 1", entryPath := some e.path }
   else
     pure normPath
@@ -117,7 +358,7 @@ where
   /-- Fold entries left-to-right checking path, symlink, metadata, and duplicate invariants. -/
   go (rest : List TarEntry) (seen : List String) (acc : ByteArray) : Except TarError ByteArray :=
     match rest with
-    | [] => .ok (acc ++ zeroBlock ++ zeroBlock)
+    | [] => .ok (acc ++ zeroBlockImpl ++ zeroBlockImpl)
     | e :: tail =>
       match validatePackEntry opts e with
       | .error err => .error err
@@ -125,7 +366,7 @@ where
         if seen.contains normPath then
           .error { kind := .duplicatePath, message := s!"duplicate tar entry path: {normPath}", entryPath := some normPath }
         else
-          let eff := if opts.deterministic then zeroDeterministicMeta e else e
+          let eff := if opts.deterministic then zeroDeterministicMetaImpl e else e
           go tail (normPath :: seen) (acc ++ encodeEntryBlocks eff normPath)
 
 /-- Serialize entries using default `PackOptions`. -/
@@ -259,12 +500,12 @@ def parsePaxNat (val : String) (offset : Nat) (key : String) : Except TarError N
     .error { kind := .invalidHeader, message := s!"invalid PAX {key} digits", offset := some offset }
   else
     let n := cs.foldl (fun acc c => acc * 10 + (c.toNat - '0'.toNat)) 0
-    if n ≥ u64Limit then
+    if n ≥ u64LimitImpl then
       .error { kind := .sizeOverflow, message := s!"PAX {key} overflows 2^64", offset := some offset }
     else
       .ok n
 
-/-- Parse PAX `mtime` as `<digits>[.<digits>]`, returning integer seconds under `u64Limit`. -/
+/-- Parse PAX `mtime` as `<digits>[.<digits>]`, returning integer seconds under `u64LimitImpl`. -/
 def parsePaxMtime (val : String) (offset : Nat) : Except TarError Nat :=
   let cs := val.toList
   if cs.isEmpty then
@@ -286,7 +527,7 @@ def parsePaxMtime (val : String) (offset : Nat) : Except TarError Nat :=
         .error { kind := .invalidHeader, message := "malformed PAX mtime fraction", offset := some offset }
       else
         let n := intPart.foldl (fun acc c => acc * 10 + (c.toNat - '0'.toNat)) 0
-        if n ≥ u64Limit then
+        if n ≥ u64LimitImpl then
           .error { kind := .sizeOverflow, message := "PAX mtime overflows 2^64", offset := some offset }
         else
           .ok n
@@ -324,12 +565,12 @@ def applyPaxKey (ov : PaxOverrides) (key val : String) (offset : Nat) : Except T
   if key == "path" then .ok { ov with path? := some val }
   else if key == "linkpath" then .ok { ov with linkpath? := some val }
   else if key == "uname" then
-    if hasNulString val then
+    if hasNulStringImpl val then
       .error { kind := .invalidHeader, message := "NUL byte in PAX uname", offset := some offset }
     else
       .ok { ov with uname? := some val }
   else if key == "gname" then
-    if hasNulString val then
+    if hasNulStringImpl val then
       .error { kind := .invalidHeader, message := "NUL byte in PAX gname", offset := some offset }
     else
       .ok { ov with gname? := some val }
@@ -383,7 +624,7 @@ where
                   | none, _ | _, none =>
                     .error { kind := .invalidEncoding, message := "invalid UTF-8 in PAX record", offset := some offset }
                   | some key, some val =>
-                    if key.isEmpty || hasNulString key || key.toList.contains '\n' then
+                    if key.isEmpty || hasNulStringImpl key || key.toList.contains '\n' then
                       .error { kind := .invalidHeader, message := "invalid PAX record key", offset := some offset }
                     else if seenKeys.contains key then
                       .error { kind := .invalidHeader, message := s!"duplicate PAX key: {key}", offset := some offset }
@@ -416,11 +657,11 @@ def parseUstarHeader (bytes : ByteArray) (offset : Nat) : Except TarError UstarH
     throw { kind := .checksumMismatch, message := "USTAR header checksum mismatch", offset := some offset }
   if !hasValidMagic bytes offset then
     throw { kind := .invalidHeader, message := "invalid USTAR magic or version", offset := some offset }
-  let uMode ← parseUstarNumeric bytes (offset + 100) (offset + 108) offset false u32Limit "mode"
-  let uUid ← parseUstarNumeric bytes (offset + 108) (offset + 116) offset true u64Limit "uid"
-  let uGid ← parseUstarNumeric bytes (offset + 116) (offset + 124) offset true u64Limit "gid"
-  let uSize ← parseUstarNumeric bytes (offset + 124) (offset + 136) offset false u64Limit "size"
-  let uMtime ← parseUstarNumeric bytes (offset + 136) (offset + 148) offset true u64Limit "mtime"
+  let uMode ← parseUstarNumeric bytes (offset + 100) (offset + 108) offset false u32LimitImpl "mode"
+  let uUid ← parseUstarNumeric bytes (offset + 108) (offset + 116) offset true u64LimitImpl "uid"
+  let uGid ← parseUstarNumeric bytes (offset + 116) (offset + 124) offset true u64LimitImpl "gid"
+  let uSize ← parseUstarNumeric bytes (offset + 124) (offset + 136) offset false u64LimitImpl "size"
+  let uMtime ← parseUstarNumeric bytes (offset + 136) (offset + 148) offset true u64LimitImpl "mtime"
   let typeByte : UInt8 := if h : offset + 156 < bytes.size then bytes[offset + 156]'h else 0
   pure { mode := uMode, uid := uUid, gid := uGid, size := uSize, mtime := uMtime, typeflag := typeByte }
 
@@ -446,7 +687,7 @@ def decodeTarEntry (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
     else if totalBytes + effSize > opts.maxTotalBytes then
       .error { kind := .resourceLimitExceeded, message := "tar archive exceeds maxTotalBytes limit", offset := some offset }
     else
-      let padded := pad512 effSize
+      let padded := pad512Impl effSize
       if offset + 512 + padded > bytes.size then
         .error { kind := .truncatedArchive, message := "truncated tar entry payload", offset := some offset }
       else
@@ -476,12 +717,12 @@ def decodeTarEntry (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
         match pathRes, linkRes, unameRes, gnameRes with
         | .error e, _, _, _ | _, .error e, _, _ | _, _, .error e, _ | _, _, _, .error e => .error e
         | .ok rawPath, .ok rawLink, .ok uname, .ok gname =>
-          match validateEntryPath opts.allowAbsolute opts.allowParentTraversal kind rawPath with
+          match validateEntryPathImpl opts.allowAbsolute opts.allowParentTraversal kind rawPath with
           | .error err => .error { err with offset := some offset }
           | .ok normPath =>
             let symCheck : Except TarError Unit :=
               match kind with
-              | .symlink => validateSymlinkTarget opts.allowAbsolute opts.allowParentTraversal normPath rawLink
+              | .symlink => validateSymlinkTargetImpl opts.allowAbsolute opts.allowParentTraversal normPath rawLink
               | .regular | .directory => .ok ()
             match symCheck with
             | .error err => .error { err with offset := some offset }
@@ -541,7 +782,7 @@ def unpackStep (opts : UnpackOptions) (bytes : ByteArray) (offset : Nat)
         else if hdr.size > maxPaxHeaderBytes then
           .error { kind := .resourceLimitExceeded, message := "PAX header exceeds maxPaxHeaderBytes", offset := some offset }
         else
-          let padded := pad512 hdr.size
+          let padded := pad512Impl hdr.size
           let nextOffset := offset + 512 + padded
           if nextOffset > bytes.size then
             .error { kind := .truncatedArchive, message := "truncated PAX extended header payload", offset := some offset }

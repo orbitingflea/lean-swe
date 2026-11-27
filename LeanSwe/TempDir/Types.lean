@@ -1,3 +1,8 @@
+import LeanSwe.EnvVars.Types
+import LeanSwe.Fs.Types
+import LeanSwe.Time.Types
+import LeanSwe.Uuid.Types
+
 namespace LeanSwe.TempDir
 
 /-- Classification of failures in `LeanSwe.TempDir`. -/
@@ -53,5 +58,20 @@ structure TempDirApiM (m : Type → Type) where
 
 /-- Concrete `IO` temporary-directory API bundle exported by `LeanSwe.TempDir`. -/
 abbrev TempDirApi := TempDirApiM IO
+
+namespace Internal
+
+/-- Bundled lower-layer capability interfaces consumed internally by `LeanSwe.TempDir`. -/
+structure TempDirCaps (m : Type → Type) where
+  /-- Filesystem capability interface. -/
+  fs : LeanSwe.Fs.FsApiM m
+  /-- Clock/sleep capability interface. -/
+  time : LeanSwe.Time.TimeOpsM m
+  /-- UUID capability interface. -/
+  uuid : LeanSwe.Uuid.UuidApiM m
+  /-- Environment-variable capability interface. -/
+  env : LeanSwe.EnvVars.EnvVarsApiM m
+
+end Internal
 
 end LeanSwe.TempDir

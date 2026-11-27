@@ -87,6 +87,7 @@ private theorem parsePaxNat_refines (val : String) (offset : Nat) (key : String)
     | .error err, .error k => tarErrKeyOf err = k ∧ !err.message.isEmpty = true
     | _, _ => False := by
   unfold parsePaxNat parsePaxNatModel
+  rw [u64LimitImpl_eq]
   dsimp only
   generalize val.toList = cs
   by_cases h1 : cs.isEmpty = true
@@ -108,6 +109,7 @@ private theorem parsePaxMtime_refines (val : String) (offset : Nat) :
     | .error err, .error k => tarErrKeyOf err = k ∧ !err.message.isEmpty = true
     | _, _ => False := by
   unfold parsePaxMtime parsePaxMtimeModel
+  rw [u64LimitImpl_eq]
   dsimp only
   generalize val.toList = cs
   by_cases h1 : cs.isEmpty = true
@@ -146,6 +148,7 @@ private theorem applyPaxKey_refines {ov : PaxOverrides} {mov : PaxModelOverrides
     | _, _ => False := by
   rcases hrel with ⟨h1, h2, h3, h4, h5, h6, h7, h8⟩
   unfold applyPaxKey applyPaxKeyModel
+  simp only [hasNulStringImpl_eq]
   by_cases kp : (key == "path") = true
   · simp only [kp, ↓reduceIte]; exact ⟨rfl, h2, h3, h4, h5, h6, h7, h8⟩
   simp only [Bool.eq_false_iff.mpr kp, Bool.false_eq_true, ↓reduceIte]
@@ -320,6 +323,8 @@ private theorem parsePaxPayload_go_refines (pax : ByteArray) (offset : Nat) :
                     cases String.fromUTF8? (pax.extract (eqIdx + 1) (pos + recLen - 1)) with
                     | none => exact ⟨rfl, rfl⟩
                     | some val =>
+                      dsimp only
+                      rw [hasNulStringImpl_eq]
                       by_cases hkbad : (key.isEmpty || hasNulString key || key.toList.contains '\n') = true
                       · simp only [hkbad, ↓reduceIte]; exact ⟨rfl, rfl⟩
                       · simp only [Bool.eq_false_iff.mpr hkbad, Bool.false_eq_true, ↓reduceIte]

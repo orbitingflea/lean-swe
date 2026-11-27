@@ -18,6 +18,21 @@ namespace LeanSwe.Toml.Proofs
 
 open Core LeanSwe.Toml LeanSwe.Toml.Model LeanSwe.Toml.Impl LeanSwe.NumParse LeanSwe.NumParse.Model
 
+@[simp] theorem isBareKeyCharImpl_eq (c : Char) : isBareKeyCharImpl c = isBareKeyChar c := rfl
+@[simp] theorem isDisallowedControlImpl_eq (c : Char) : isDisallowedControlImpl c = isDisallowedControl c := rfl
+@[simp] theorem validTomlDateImpl_eq (d : Std.Time.PlainDate) : validTomlDateImpl d = validTomlDate d := rfl
+@[simp] theorem validTomlOffsetImpl_eq (o : Std.Time.TimeZone.Offset) : validTomlOffsetImpl o = validTomlOffset o := rfl
+@[simp] theorem isValidBareKeyImpl_eq (s : String) : isValidBareKeyImpl s = isValidBareKey s := rfl
+@[simp] theorem hexDigitUpperImpl_eq (n : Nat) : hexDigitUpperImpl n = hexDigitUpper n := rfl
+@[simp] theorem escapeBasicCharImpl_eq (b : Bool) (c : Char) : escapeBasicCharImpl b c = escapeBasicChar b c := rfl
+@[simp] theorem escapeBasicBodyImpl_eq (b : Bool) (s : String) : escapeBasicBodyImpl b s = escapeBasicBody b s := rfl
+@[simp] theorem padNatZeroImpl_eq (w n : Nat) : padNatZeroImpl w n = padNatZero w n := rfl
+@[simp] theorem lookupKeyListImpl_eq (k : String) : ∀ xs, lookupKeyListImpl k xs = lookupKeyList k xs
+  | [] => rfl
+  | (k', v) :: rest => by simp only [lookupKeyListImpl, lookupKeyList, lookupKeyListImpl_eq k rest]
+@[simp] theorem lookupKeyImpl_eq (k : String) (t : TomlTable) : lookupKeyImpl k t = lookupKey k t :=
+  lookupKeyListImpl_eq k t.toList
+
 /-- Bundle of `NumParse` specification proofs assumed for a parametric `numApi : NumParseApi`. -/
 structure ValidNumApi (numApi : NumParseApi) : Prop where
   /-- Errors returned by `numApi` carry non-empty diagnostic messages. -/
@@ -1076,16 +1091,16 @@ theorem allPass_accessorError (numApi : NumParseApi) : Core.AllPass (test_toml_a
   have harr : ∀ e, tomlGetArray v = .error e → (!decide (e.message.isEmpty = true)) = true := by
     intro e he; cases v <;> simp [tomlGetArray] at he <;> subst he <;> exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)
   have hfld : ∀ e, tomlGetField (α := TomlValue) t k = .error e → (!decide (e.message.isEmpty = true)) = true := by
-    intro e he; simp only [tomlGetField] at he; cases hl : lookupKey k t <;> simp [hl, FromToml.fromToml] at he; subst he; exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)
+    intro e he; simp only [tomlGetField, lookupKeyImpl_eq] at he; cases hl : lookupKey k t <;> simp [hl, FromToml.fromToml] at he; subst he; exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)
   have hopt : ∀ e, tomlGetOptField (α := String) t k = .error e → (!decide (e.message.isEmpty = true)) = true := by
-    intro e he; simp only [tomlGetOptField] at he; cases hl : lookupKey k t with
+    intro e he; simp only [tomlGetOptField, lookupKeyImpl_eq] at he; cases hl : lookupKey k t with
     | none => simp [hl] at he
     | some val => simp only [hl] at he; cases val <;> simp [FromToml.fromToml] at he <;> subst he <;> exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)
   have hpath : ∀ (p acc : List String) (tbl : TomlTable) (e : TomlError), tomlGetPathAux (α := TomlValue) acc tbl p = .error e → (!decide (e.message.isEmpty = true)) = true := by
     intro p; induction p with
     | nil => intro _ _ _ he; simp [tomlGetPathAux, FromToml.fromToml] at he
     | cons seg rest ih =>
-      intro acc tbl e he; cases rest <;> simp only [tomlGetPathAux] at he
+      intro acc tbl e he; cases rest <;> simp only [tomlGetPathAux, lookupKeyImpl_eq] at he
       · cases hl : lookupKey seg tbl <;> simp [hl, FromToml.fromToml] at he; subst he; exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)
       · cases hl : lookupKey seg tbl with
         | none => simp [hl] at he; subst he; exact not_decide_isEmpty_eq_true (nonEmptyMsg_nonEmpty _)

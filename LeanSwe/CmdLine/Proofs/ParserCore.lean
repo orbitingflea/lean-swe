@@ -1,6 +1,31 @@
+import LeanSwe.CmdLine.Model
 import LeanSwe.CmdLine.Impl
 namespace LeanSwe.CmdLine.Proofs.Shared
 open LeanSwe.CmdLine
+@[simp] theorem internal_isAsciiWhitespace_eq (c : Char) : Internal.isAsciiWhitespace c = Model.isAsciiWhitespace c := rfl
+@[simp] theorem internal_dropLeadingWhitespace_eq : ∀ cs, Internal.dropLeadingWhitespace cs = Model.dropLeadingWhitespace cs
+  | [] => rfl
+  | c :: cs => by simp only [Internal.dropLeadingWhitespace, Model.dropLeadingWhitespace, internal_isAsciiWhitespace_eq, internal_dropLeadingWhitespace_eq cs]
+@[simp] theorem internal_trimAscii_eq (s : String) : Internal.trimAscii s = Model.trimAscii s := by
+  simp [Internal.trimAscii, Model.trimAscii, Internal.trimAsciiChars, Model.trimAsciiChars]
+@[simp] theorem internal_asciiLower_eq (s : String) : Internal.asciiLower s = Model.asciiLower s := rfl
+@[simp] theorem internal_allDistinct_eq {α : Type} [BEq α] : ∀ xs : List α, Internal.allDistinct xs = Model.allDistinct xs
+  | [] => rfl
+  | x :: xs => by simp only [Internal.allDistinct, Model.allDistinct, internal_allDistinct_eq xs]
+@[simp] theorem internal_validArgOrder_eq : ∀ b1 b2 xs, Internal.validArgOrder b1 b2 xs = Model.validArgOrder b1 b2 xs
+  | _, _, [] => rfl
+  | b1, b2, a :: rest => by
+    unfold Internal.validArgOrder Model.validArgOrder
+    repeat (split; · rfl)
+    exact internal_validArgOrder_eq _ _ rest
+@[simp] theorem internal_parseBoolString_eq (s : String) : Internal.parseBoolString s = Model.parseBoolString s := rfl
+@[simp] theorem internal_validateCustomValue_eq (k : ValueKind) (s : String) (vs : CustomValidators) :
+    Internal.validateCustomValue k s vs = Model.validateCustomValue k s vs := rfl
+@[simp] theorem internal_isValidCommandName_eq (n : String) : Internal.isValidCommandName n = Model.isValidCommandName n := rfl
+@[simp] theorem internal_isValidValueKind_eq (k : ValueKind) : Internal.isValidValueKind k = Model.isValidValueKind k := by
+  cases k <;> simp [Internal.isValidValueKind, Model.isValidValueKind]
+@[simp] theorem internal_startsWithDash_eq (s : String) : Internal.startsWithDash s = Model.startsWithDash s := rfl
+@[simp] theorem internal_startsWithNoDash_eq (s : String) : Internal.startsWithNoDash s = Model.startsWithNoDash s := rfl
 /-- Check whether `c` is an ASCII decimal digit `'0'..'9'`. -/
 def isAsciiDigit (c : Char) : Bool := '0' ≤ c && c ≤ '9'
 private theorem digitChar_prop (k : Nat) (hk : k < 10) : isAsciiDigit (Nat.digitChar k) = true ∧ (Nat.digitChar k).toNat - 48 = k := by
@@ -87,9 +112,20 @@ theorem parseIntCharsFast_eq (cs : List Char) : Internal.parseIntCharsFast cs = 
 /-- `Internal.parseOptValueFast` equals `Model.parseOptValue`. -/
 theorem parseOptValueFast_eq (k : ValueKind) (s : String) : Internal.parseOptValueFast k s = Model.parseOptValue k s := by
   cases k <;> simp [Internal.parseOptValueFast, Model.parseOptValue, parseNatCharsFast_eq, parseIntCharsFast_eq] <;> rfl
+@[simp] theorem internal_isValidOptLocal_eq (opt : OptSpec) : Internal.isValidOptLocal opt = Model.isValidOptLocal opt := by
+  unfold Internal.isValidOptLocal Model.isValidOptLocal
+  have h1 : Internal.isValidLookupName opt.name = Model.isValidLookupName opt.name := rfl
+  have h2 : ∀ l, Internal.isValidLongName l = Model.isValidLongName l := fun _ => rfl
+  have h3 : ∀ c, Internal.isValidShortChar c = Model.isValidShortChar c := fun _ => rfl
+  have h4 : ∀ k, Internal.isValidEnvKey k = Model.isValidEnvKey k := fun _ => rfl
+  simp only [h1, h2, h3, h4, internal_startsWithNoDash_eq, internal_isValidValueKind_eq, parseOptValueFast_eq]; rfl
+@[simp] theorem internal_isValidArg_eq (arg : ArgSpec) : Internal.isValidArg arg = Model.isValidArg arg := by
+  unfold Internal.isValidArg Model.isValidArg
+  have h1 : Internal.isValidLookupName arg.name = Model.isValidLookupName arg.name := rfl
+  simp only [h1, internal_isValidValueKind_eq, parseOptValueFast_eq]; rfl
 /-- `Internal.parseOptValueWithFast` equals `Model.parseOptValueWith`. -/
 theorem parseOptValueWithFast_eq (k : ValueKind) (s : String) (vs : CustomValidators) : Internal.parseOptValueWithFast k s vs = Model.parseOptValueWith k s vs := by
-  unfold Internal.parseOptValueWithFast Model.parseOptValueWith; rw [parseOptValueFast_eq]
+  unfold Internal.parseOptValueWithFast Model.parseOptValueWith; rw [parseOptValueFast_eq, internal_validateCustomValue_eq]
 /-- `Internal.resolveOptDefaultFast` equals `Model.resolveOptDefault`. -/
 theorem resolveOptDefaultFast_eq (opt : OptSpec) (vs : CustomValidators) : Internal.resolveOptDefaultFast opt vs = Model.resolveOptDefault opt vs := by
   unfold Internal.resolveOptDefaultFast Model.resolveOptDefault; simp only [parseOptValueWithFast_eq]; rfl
@@ -219,7 +255,7 @@ theorem lookupLongOpt_neg (opts : List OptSpec) (hnd : (Model.collectVisibleLong
   have hpred : opts.find? (fun x => x.kind == .bool && !x.repeatable && x.long == some l) = some o := by
     clear hnone hno hnd ho hl; induction opts with | nil => cases hf | cons y ys ih =>
       simp only [List.find?] at hf ⊢; cases hyl : (y.long == some l) with | false => rw [hyl] at hf; simp only [Bool.and_false]; exact ih hf | true => rw [hyl] at hf; injection hf with hyo; subst hyo; simp [hk, hnr]; rfl
-  unfold Internal.lookupLongOpt; rw [hnone, hsnd, hdrop]; simp [hpred]
+  unfold Internal.lookupLongOpt; rw [hnone, internal_startsWithNoDash_eq, hsnd, hdrop]; simp [hpred]
 /-- Membership and boolean invariant for `lookupLongOpt` results. -/
 theorem lookupLongOpt_mem {opts : List OptSpec} {namePart : String} {opt : OptSpec} {isNeg : Bool} (h : Internal.lookupLongOpt opts namePart = some (opt, isNeg)) :
     opt ∈ opts ∧ opt.long.isNone = false ∧ (isNeg = true → opt.kind = .bool ∧ opt.repeatable = false) := by
@@ -439,7 +475,7 @@ private theorem stepToken_sound (rootSpec : CommandSpec) {validators : CustomVal
                     · simp only [hin, Bool.false_eq_true, ↓reduceIte] at h; by_cases hbool : opt.kind == .bool
                       · simp only [hbool, ↓reduceIte] at h; have hk := valueKind_eq_of_beq hbool; cases heqv : (Internal.splitFirstEq (String.ofList longRest)).snd with
                         | none => rw [heqv] at h; injection h with hst; subst hst; exact ⟨⟨vp, hnode, heff⟩, hpath, cliOptsInv_record hndNames hcli ho (v := .bool true) (by rw [hk]; trivial) (fun _ => rfl) (fun _ => rfl), fun _ hc => by cases hc⟩
-                        | some rawVal => rw [heqv] at h; dsimp only at h; cases hpv : Model.parseOptValue .bool rawVal with | error _ => rw [hpv] at h; cases h | ok ov => cases ov with
+                        | some rawVal => rw [heqv] at h; dsimp only at h; rw [parseOptValueFast_eq] at h; cases hpv : Model.parseOptValue .bool rawVal with | error _ => rw [hpv] at h; cases h | ok ov => cases ov with
                           | bool b =>
                             rw [hpv] at h; dsimp only at h; split at h; · cases h
                             · rename_i hnb; injection h with hst; subst hst; exact ⟨⟨vp, hnode, heff⟩, hpath, cliOptsInv_record hndNames hcli ho (v := .bool b) (by rw [hk]; trivial) (fun hb => by cases hb' : b <;> first | rfl | (rw [hb'] at hnb; simp [(Bool.and_eq_true _ _).mp hb |>.2] at hnb)) (fun hnl => by rw [hln, Bool.and_false] at hnl; cases hnl), fun _ hc => by cases hc⟩
@@ -629,7 +665,9 @@ private theorem checkCommandNodeStep_iff (node : CommandSpec) (ctx : Internal.Va
             have hargD : (Internal.insertDistinctSet ({} : Std.HashSet String) (args.map (·.name))).isSome = Model.allDistinct (args.map (·.name)) := by rw [insertDistinctSet_isSome _ [] _ (fun _ => Std.HashSet.contains_empty)]; simp [List.all_eq_true]
             have hsubD : (Internal.insertDistinctSet ({} : Std.HashSet String) (subcommands.map (·.name))).isSome = Model.allDistinct (subcommands.map (·.name)) := by rw [insertDistinctSet_isSome _ [] _ (fun _ => Std.HashSet.contains_empty)]; simp [List.all_eq_true]
             have hargDisj : args.all (fun a => !s1.contains a.name) = (args.map (·.name)).all (fun a => !(baseOpts.map (·.name) ++ options.map (·.name)).contains a) := by rw [List.all_map]; congr 1; funext a; rw [hs1.2 a.name]; rfl
-            simp only [hs1.1, hs2.1, hs3.1, hs4.1, hs3.2 'h', hs3.2 'V', hargD, hsubD, hargDisj, Bool.and_true]
+            have hOptEq : Internal.isValidOptLocal = Model.isValidOptLocal := funext internal_isValidOptLocal_eq
+            have hArgEq : Internal.isValidArg = Model.isValidArg := funext internal_isValidArg_eq
+            simp only [hs1.1, hs2.1, hs3.1, hs4.1, hs3.2 'h', hs3.2 'V', hargD, hsubD, hargDisj, Bool.and_true, internal_isValidCommandName_eq, hOptEq, hArgEq, internal_validArgOrder_eq]
             by_cases hok : (Model.isValidCommandName name && options.all Model.isValidOptLocal && (!shortHelp || !(baseOpts.filterMap (·.short) ++ options.filterMap (·.short)).contains 'h') && (!(shortVersion && (version <|> ctx.effVer).isSome) || !(baseOpts.filterMap (·.short) ++ options.filterMap (·.short)).contains 'V') && args.all Model.isValidArg && Model.allDistinct (args.map (·.name)) && (args.map (·.name)).all (fun a => !(baseOpts.map (·.name) ++ options.map (·.name)).contains a) && Model.validArgOrder false false args && (if subcommands.isEmpty then true else args.isEmpty && options.all (·.global)) && Model.allDistinct (subcommands.map (·.name))) = true
             · simp only [hok, ↓reduceIte, ValidCtxInv, List.map_append, List.filterMap_append, collectVisibleLongs_append, Bool.true_and]; exact ⟨fun _ hnc => by injection hnc with he; subst he; exact ⟨⟨hs1.1, hs1.2, hs2.1, hs2.2, hs3.1, hs3.2, hs4.1, hs4.2⟩, rfl, trivial⟩, fun hc => (by cases hc)⟩
             · have hokf : _ = false := Bool.eq_false_iff.mpr hok; simp only [hokf, Bool.false_eq_true, ↓reduceIte, Bool.false_and]; exact ⟨fun _ hc => (by cases hc), fun _ => trivial⟩
@@ -840,7 +878,7 @@ private theorem addOptOne_matches (vis : List OptSpec) (opt : OptSpec) (hLongNd 
     (∀ k, lm1[k]? = Internal.lookupLongOpt (vis ++ [opt]) k) ∧ (∀ c, sm1[c]? = (vis ++ [opt]).find? (fun o => o.short == some c)) := by
   constructor
   · intro k; rw [collectVisibleLongs_eq_flatMap, List.flatMap_append] at hLongNd; cases hl : opt.long with
-    | none => dsimp only; rw [hlm k]; unfold Internal.lookupLongOpt; simp only [List.find?_append, List.find?_cons, List.find?_nil, hl]; cases vis.find? (fun o => o.long == some k) <;> first | simp | (simp only [Option.or_none]; split <;> simp [hl])
+    | none => dsimp only; rw [hlm k]; unfold Internal.lookupLongOpt; rw [internal_startsWithNoDash_eq]; simp only [List.find?_append, List.find?_cons, List.find?_nil, hl]; cases vis.find? (fun o => o.long == some k) with | some _ => simp | none => by_cases hnd : Model.startsWithNoDash k = true <;> simp [hnd]
     | some l =>
       dsimp only; by_cases hBool : (opt.kind == ValueKind.bool && !opt.repeatable)
       · simp only [hBool, ↓reduceIte]
@@ -864,7 +902,7 @@ private theorem addOptOne_matches (vis : List OptSpec) (opt : OptSpec) (hLongNd 
                 | none =>
                   simp only [Option.none_or]
                   have hneBase : (l == String.ofList (k.toList.drop 3)) = false := beq_eq_false_iff_ne.mpr fun heq => by
-                    rename_i hsnd; unfold Model.startsWithNoDash at hsnd; have ht : k.toList.take 3 = ['n', 'o', '-'] := by simpa using hsnd
+                    rename_i hsnd; rw [internal_startsWithNoDash_eq] at hsnd; unfold Model.startsWithNoDash at hsnd; have ht : k.toList.take 3 = ['n', 'o', '-'] := by simpa using hsnd
                     have hlen : k.toList = ['n', 'o', '-'] ++ k.toList.drop 3 := by rw [← ht, List.take_append_drop]
                     have hkStr : "no-" ++ String.ofList (k.toList.drop 3) = k := by rw [show "no-" = String.ofList ['n', 'o', '-'] from rfl, ← String.ofList_append]; simpa [String.ofList_toList] using congrArg String.ofList hlen.symm
                     exact hneNeg (hkStr ▸ congrArg ("no-" ++ ·) heq.symm)
@@ -1037,7 +1075,7 @@ private theorem stepTokenFast_eq (rootSpec : CommandSpec) (validators : CustomVa
                           · simp only [hin, Bool.false_eq_true, ↓reduceIte]; by_cases hbool : opt.kind == .bool
                             · simp only [hbool, ↓reduceIte]; cases (Internal.splitFirstEq (String.ofList rest2)).snd with
                               | none => exact ⟨hCur, hPath, hVis, rfl, rfl, rfl, hPos, recordCliFast_matches stF.cliMap st.cliOpts hCli opt.name (.bool true), hLong, hShort⟩
-                              | some rv => dsimp only; cases Model.parseOptValue .bool rv with | error _ => rfl | ok ov => cases ov with
+                              | some rv => dsimp only; rw [parseOptValueFast_eq]; cases Model.parseOptValue .bool rv with | error _ => rfl | ok ov => cases ov with
                                 | bool b =>
                                   dsimp only; by_cases hrep : (opt.repeatable && !b)
                                   · simp [hrep]

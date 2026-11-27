@@ -1,15 +1,51 @@
 import LeanSwe.Toml.Types
-import LeanSwe.Toml.Model
 import LeanSwe.NumParse.Types
-import LeanSwe.NumParse.Model
 import LeanSwe.Toml.Impl.LexerAndScalar
 
 namespace LeanSwe.Toml.Impl
 
 open LeanSwe.Toml
-open LeanSwe.Toml.Model
 open LeanSwe.NumParse
-open LeanSwe.NumParse.Model
+
+/-- Look up the first value associated with `k` in an association list. -/
+def lookupKeyListImpl (k : String) : List (String × TomlValue) → Option TomlValue
+  | [] => none
+  | (k', v) :: rest => if k == k' then some v else lookupKeyListImpl k rest
+
+/-- Look up the first value associated with `k` in a `TomlTable`. -/
+def lookupKeyImpl (k : String) (t : TomlTable) : Option TomlValue :=
+  lookupKeyListImpl k t.toList
+
+/-- Check whether `s` is a valid non-empty ASCII bare key. -/
+def isValidBareKeyImpl (s : String) : Bool :=
+  !s.isEmpty && s.toList.all isBareKeyCharImpl
+
+/-- Encode a single byte `n < 16` as an uppercase hexadecimal character. -/
+def hexDigitUpperImpl (n : Nat) : Char :=
+  if n < 10 then Char.ofNat ('0'.toNat + n) else Char.ofNat ('A'.toNat + (n - 10))
+
+/-- Escape a single character for canonical TOML basic strings/keys. -/
+def escapeBasicCharImpl (allowNewline : Bool) (c : Char) : String :=
+  if c == '\\' then "\\\\"
+  else if c == '"' then "\\\""
+  else if c == '\x08' then "\\b"
+  else if c == '\t' then "\\t"
+  else if c == '\n' then if allowNewline then "\n" else "\\n"
+  else if c == '\x0c' then "\\f"
+  else if c == '\r' then "\\r"
+  else if isDisallowedControlImpl c then
+    let n := c.toNat
+    "\\u00" ++ String.ofList [hexDigitUpperImpl (n / 16), hexDigitUpperImpl (n % 16)]
+  else String.singleton c
+
+/-- Render a canonical basic string body (`allowNewline = false` for `"..."`, `true` for `"""..."""`). -/
+def escapeBasicBodyImpl (allowNewline : Bool) (s : String) : String :=
+  String.join (s.toList.map (escapeBasicCharImpl allowNewline))
+
+/-- Pad a natural number with leading zeros to width `w`. -/
+def padNatZeroImpl (w : Nat) (n : Nat) : String :=
+  let s := toString n
+  if s.length ≥ w then s else String.ofList (List.replicate (w - s.length) '0') ++ s
 
 /-- Provenance classification of a TOML table node during document construction. -/
 inductive TableKind where
@@ -327,24 +363,24 @@ def parseWithNum (numApi : NumParseApi) (input : String) : Except TomlError Toml
 
 /-- Format a key using bare syntax when ASCII bare-valid, or basic escaped quotes otherwise. -/
 def formatKey (k : String) : String :=
-  if isValidBareKey k then k else "\"" ++ escapeBasicBody false k ++ "\""
+  if isValidBareKeyImpl k then k else "\"" ++ escapeBasicBodyImpl false k ++ "\""
 
 /-- Format a fractional nanosecond value trimming trailing zeros, or `""` when zero. -/
 def formatNanosTrimmed (nano : Nat) : String :=
   if nano == 0 then ""
   else
-    let padded := padNatZero 9 nano
+    let padded := padNatZeroImpl 9 nano
     let trimmedRev := padded.toList.reverse.dropWhile (· == '0')
     "." ++ String.ofList trimmedRev.reverse
 
 /-- Format a `Std.Time.PlainDate` as `YYYY-MM-DD`. -/
 def formatDate (d : Std.Time.PlainDate) : String :=
-  padNatZero 4 d.year.toNat ++ "-" ++ padNatZero 2 d.month.val.toNat ++ "-" ++ padNatZero 2 d.day.val.toNat
+  padNatZeroImpl 4 d.year.toNat ++ "-" ++ padNatZeroImpl 2 d.month.val.toNat ++ "-" ++ padNatZeroImpl 2 d.day.val.toNat
 
 /-- Format a `Std.Time.PlainTime` as `HH:MM:SS(.trimmed)?`. -/
 def formatTime (t : Std.Time.PlainTime) : String :=
-  padNatZero 2 t.hour.val.toNat ++ ":" ++ padNatZero 2 t.minute.val.toNat ++ ":" ++
-    padNatZero 2 t.second.val.toNat ++ formatNanosTrimmed t.nanosecond.val.toNat
+  padNatZeroImpl 2 t.hour.val.toNat ++ ":" ++ padNatZeroImpl 2 t.minute.val.toNat ++ ":" ++
+    padNatZeroImpl 2 t.second.val.toNat ++ formatNanosTrimmed t.nanosecond.val.toNat
 
 /-- Format a `Std.Time.TimeZone.Offset` as `Z` when `0` or `±HH:MM` otherwise. -/
 def formatOffset (o : Std.Time.TimeZone.Offset) : String :=
@@ -352,7 +388,7 @@ def formatOffset (o : Std.Time.TimeZone.Offset) : String :=
   else
     let sign := if o.second.val < 0 then "-" else "+"
     let absMin := o.second.val.natAbs / 60
-    sign ++ padNatZero 2 (absMin / 60) ++ ":" ++ padNatZero 2 (absMin % 60)
+    sign ++ padNatZeroImpl 2 (absMin / 60) ++ ":" ++ padNatZeroImpl 2 (absMin % 60)
 
 /-- Check whether `xs` is a non-empty array whose elements are all `.table _` values (eligible for `[[...]]`). -/
 def isNonEmptyTableArray (xs : Array TomlValue) : Bool :=
@@ -361,7 +397,7 @@ def isNonEmptyTableArray (xs : Array TomlValue) : Bool :=
 mutual
   /-- Format any `TomlValue` on a single line (used for scalars, arrays, and inline tables). -/
   def formatValueInline (numApi : NumParseApi) : TomlValue → String
-    | .string s => "\"" ++ escapeBasicBody false s ++ "\""
+    | .string s => "\"" ++ escapeBasicBodyImpl false s ++ "\""
     | .int n => numApi.formatInt n.toInt
     | .float f => numApi.formatFloat f
     | .bool b => if b then "true" else "false"
@@ -455,7 +491,7 @@ def tomlGetArray : TomlValue → Except TomlError (Array TomlValue)
 
 /-- Look up required `key` in `t` and decode via `FromToml`. -/
 def tomlGetField {α : Type} [FromToml α] (t : TomlTable) (key : String) : Except TomlError α :=
-  match lookupKey key t with
+  match lookupKeyImpl key t with
   | none => .error (mkErr .missingField ("missing TOML field: " ++ key) (path := some key))
   | some v =>
     match FromToml.fromToml v with
@@ -464,7 +500,7 @@ def tomlGetField {α : Type} [FromToml α] (t : TomlTable) (key : String) : Exce
 
 /-- Look up optional `key` in `t`, returning `none` when absent and decoding via `FromToml` when present. -/
 def tomlGetOptField {α : Type} [FromToml α] (t : TomlTable) (key : String) : Except TomlError (Option α) :=
-  match lookupKey key t with
+  match lookupKeyImpl key t with
   | none => .ok none
   | some v =>
     match FromToml.fromToml v with
@@ -480,7 +516,7 @@ def tomlGetPathAux {α : Type} [FromToml α] (revPrefix : List String) (t : Toml
     | .error e => .error { e with kind := .decodeError, message := nonEmptyMsg e.message, path := none }
   | [k] =>
     let full := joinPath (revPrefix.reverse ++ [k])
-    match lookupKey k t with
+    match lookupKeyImpl k t with
     | none => .error (mkErr .missingField ("missing TOML field: " ++ full) (path := some full))
     | some v =>
       match FromToml.fromToml v with
@@ -488,7 +524,7 @@ def tomlGetPathAux {α : Type} [FromToml α] (revPrefix : List String) (t : Toml
       | .error e => .error { e with kind := .decodeError, message := nonEmptyMsg e.message, path := some full }
   | k :: k' :: rest =>
     let full := joinPath (revPrefix.reverse ++ [k])
-    match lookupKey k t with
+    match lookupKeyImpl k t with
     | none => .error (mkErr .missingField ("missing TOML field: " ++ full) (path := some full))
     | some (.table sub) => tomlGetPathAux (k :: revPrefix) sub (k' :: rest)
     | some _ => .error (mkErr .typeMismatch ("expected TOML table at: " ++ full) (path := some full))

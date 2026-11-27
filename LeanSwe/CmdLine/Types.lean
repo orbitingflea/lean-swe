@@ -1,3 +1,6 @@
+import LeanSwe.EnvVars.Types
+import LeanSwe.LinuxSyscall.Files.Types
+
 namespace LeanSwe.CmdLine
 
 /-- Supported typed value schemas for CLI options and positional arguments. -/
@@ -304,5 +307,16 @@ structure CmdLineApiM (m : Type → Type) where
 
 /-- Concrete `IO` CLI API bundle exported by `LeanSwe.CmdLine`. -/
 abbrev CmdLineApi := CmdLineApiM IO
+
+namespace Internal
+
+/-- Pure capability container bundling `LinuxSyscall.Files` (`RawFd`) and `EnvVars` for `LeanSwe.CmdLine`. -/
+structure CmdLineCapsM (m : Type → Type) where
+  /-- Unbuffered OS file-descriptor capability (`dupStdio`, `read`, `write`, `close`). -/
+  files : LeanSwe.LinuxSyscall.Files.FilesOpsM m LeanSwe.LinuxSyscall.RawFd
+  /-- Process environment capability (`getEnv`). -/
+  env : LeanSwe.EnvVars.EnvVarsApiM m
+
+end Internal
 
 end LeanSwe.CmdLine
