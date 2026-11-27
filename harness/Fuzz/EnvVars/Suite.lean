@@ -2,9 +2,6 @@ import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Common.Suite
-import LeanSwe.EnvVars.Raw.Types
-import LeanSweProofs.EnvVars.Raw.Model
-import LeanSwe.EnvVars.Raw.Interface
 import LeanSwe.EnvVars.Types
 import LeanSweProofs.EnvVars.Model
 import LeanSwe.EnvVars.Interface
@@ -13,7 +10,7 @@ namespace Fuzz.EnvVars
 
 open Fuzz.Common
 open LeanSwe.EnvVars
-open LeanSwe.EnvVars.Raw.Model
+open LeanSwe.EnvVars.Model
 
 @[extern "leanswe_fuzz_host_snapshot"]
 private opaque rawFuzzHostSnapshot : BaseIO Unit
@@ -299,18 +296,12 @@ private def envErrTag (e : EnvVarsError) : String :=
   | .invalidEncoding => "invalidEncoding"
   | .ioError => "ioError"
 
-private def rawErrKindCtor : EnvVarsRawError → String
-  | .invalidEncoding _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.invalidEncoding"
-  | .invalidArgument _ _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.invalidArgument"
-  | .otherError _ _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.otherError"
-  | .userError _ => "LeanSwe.EnvVars.Raw.EnvVarsRawErrorKind.userError"
-
-private def envErrKindCtor (k : LeanSwe.EnvVars.Raw.EnvVarsErrorKind) : String :=
+private def envErrKindCtor (k : EnvVarsErrorKind) : String :=
   match k with
-  | .invalidKey => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.invalidKey"
-  | .invalidEncoding => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.invalidEncoding"
-  | .notFound => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.notFound"
-  | .ioError => "LeanSwe.EnvVars.Raw.EnvVarsErrorKind.ioError"
+  | .invalidKey => "LeanSwe.EnvVars.EnvVarsErrorKind.invalidKey"
+  | .invalidEncoding => "LeanSwe.EnvVars.EnvVarsErrorKind.invalidEncoding"
+  | .notFound => "LeanSwe.EnvVars.EnvVarsErrorKind.notFound"
+  | .ioError => "LeanSwe.EnvVars.EnvVarsErrorKind.ioError"
 
 private def exceptOptClass {ε α : Type} (errTag : ε → String) : Except ε (Option α) → String
   | .ok none => "ok_none"
@@ -371,19 +362,6 @@ private def execQueryGetStep
     (st : EnvironState) (tr : CoverageTracker) (key : String) (emitErrHits : Bool := false) :
     IO (Except String CoverageTracker) := do
   let mut t := tr
-  let actualRawGet ← LeanSwe.EnvVars.Raw.getEnv key
-  if emitErrHits then
-    if let .error e := actualRawGet then
-      Fuzz.Common.logErrHit "LeanSwe.EnvVars.Raw.getEnv" (rawErrKindCtor e) "real"
-  let modelRawGet := rawGetEnvModel st key
-  if !exceptEq actualRawGet modelRawGet then
-    return .error s!"RAW_GET_MISMATCH:{exceptOptClass rawErrTag modelRawGet}:{exceptOptClass rawErrTag actualRawGet}: key={repr key} model={formatExcept modelRawGet} actual={formatExcept actualRawGet}"
-  match actualRawGet with
-  | .ok (some _) => t := t.record "raw_getEnv" "ok.some"
-  | .ok none =>
-    t := t.record "raw_getEnv" (if !isValidPosixKeyModel key then "ok.none_invalid_key" else "ok.none_unset")
-  | .error (.invalidEncoding _ _) => t := t.record "raw_getEnv" "err.invalidEncoding"
-  | .error e => return .error s!"RAW_GET_UNEXPECTED_ERROR:ok:{rawErrTag e}: key={repr key} err={repr e}"
   let actualGet ← match customQueryGet? with
     | some fn => fn st key
     | none => LeanSwe.EnvVars.getEnv key
@@ -410,24 +388,11 @@ private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : Cover
     (emitErrHits : Bool := false) :
     IO (Except String CoverageTracker) := do
   let mut t := tr
-  let actualRawList ← LeanSwe.EnvVars.Raw.listEnv
-  if emitErrHits then
-    if let .error e := actualRawList then
-      Fuzz.Common.logErrHit "LeanSwe.EnvVars.Raw.listEnv" (rawErrKindCtor e) "real"
-  let modelRawList := rawListEnvModel st
-  if !exceptEq actualRawList modelRawList then
-    return .error s!"RAW_LIST_MISMATCH:{exceptValClass rawErrTag modelRawList}:{exceptValClass rawErrTag actualRawList}: model={formatExcept modelRawList} actual={formatExcept actualRawList}"
-  match actualRawList with
-  | .error (.invalidEncoding none _) => t := t.record "raw_listEnv" "err.invalidEncoding_key"
-  | .error (.invalidEncoding (some _) _) => t := t.record "raw_listEnv" "err.invalidEncoding_val"
-  | .error e => return .error s!"RAW_LIST_UNEXPECTED_ERROR:ok:{rawErrTag e}: {repr e}"
-  | .ok pairs =>
-    let emptyBucket := if curIsNull then "ok.empty_null_ptr" else "ok.empty_nonnull"
-    t := t.record "raw_listEnv" (if st.entries.isEmpty then emptyBucket else "ok.entries")
-    if st.entries.any (fun e => (splitFirstEqBytesModel e).isNone) then
-      t := t.record "raw_listEnv" "ok.skipped_malformed"
-    if hasDupKeys pairs then
-      t := t.record "raw_listEnv" "ok.duplicate_keys"
+  let actualRawBytes ← LeanSwe.EnvVars.listEnvironBytes
+  if actualRawBytes != st.entries then
+    return .error s!"LIST_BYTES_MISMATCH:diff:diff: modelLen={st.entries.size} actualLen={actualRawBytes.size}"
+  let emptyBucket := if curIsNull then "ok.empty_null_ptr" else "ok.empty_nonnull"
+  t := t.record "listEnvironBytes" (if st.entries.isEmpty then emptyBucket else "ok.entries")
   let actualList ← LeanSwe.EnvVars.listEnv
   if emitErrHits then
     if let .error e := actualList then
@@ -436,7 +401,12 @@ private def execQueryListStep (st : EnvironState) (curIsNull : Bool) (tr : Cover
   if !exceptEq actualList modelList then
     return .error s!"LIST_MISMATCH:{exceptValClass envErrTag modelList}:{exceptValClass envErrTag actualList}: model={formatExcept modelList} actual={formatExcept actualList}"
   match actualList with
-  | .ok _ => t := t.record "listEnv" "ok"
+  | .ok pairs =>
+    t := t.record "listEnv" "ok"
+    if st.entries.any (fun e => (splitFirstEqBytesModel e).isNone) then
+      t := t.record "listEnv" "ok.skipped_malformed"
+    if hasDupKeys pairs then
+      t := t.record "listEnv" "ok.duplicate_keys"
   | .error e =>
     t := t.record "listEnv" (if e.key.isNone then "err.invalidEncoding_key" else "err.invalidEncoding_val")
   return .ok t
@@ -531,10 +501,9 @@ private def execTraceWithOracle
       tr := tr.record "splitSearchPath" b
     | .queryMapRawErr rawErr =>
       let a1 := LeanSwe.EnvVars.mapRawError rawErr
-      let a2 := LeanSwe.EnvVars.Raw.mapRawError rawErr
       let m := mapRawErrorModel rawErr
-      if a1 != m || a2 != m then
-        return .error s!"MAP_RAW_ERR_MISMATCH:{rawErrTag rawErr}:diff: raw={repr rawErr} m={repr m} a1={repr a1} a2={repr a2}"
+      if a1 != m then
+        return .error s!"MAP_RAW_ERR_MISMATCH:{rawErrTag rawErr}:diff: raw={repr rawErr} m={repr m} a1={repr a1}"
       let mb := match rawErr with
         | .invalidEncoding _ _ => "invalidEncoding"
         | .invalidArgument _ _ _ => "invalidArgument"
@@ -614,24 +583,18 @@ private def requiredBuckets : Array CoverageBucket := #[
   bucket "unsetenv" "err.EINVAL_eq",
   bucket "unsetenv" "err.EINVAL_nul",
   bucket "clearenv" "ok.null",
-  bucket "raw_getEnv" "ok.some",
-  bucket "raw_getEnv" "ok.none_unset",
-  bucket "raw_getEnv" "ok.none_invalid_key",
-  bucket "raw_getEnv" "err.invalidEncoding",
   bucket "getEnv" "ok.some",
   bucket "getEnv" "ok.none",
   bucket "getEnv" "err.invalidKey_empty",
   bucket "getEnv" "err.invalidKey_eq",
   bucket "getEnv" "err.invalidKey_nul",
   bucket "getEnv" "err.invalidEncoding",
-  bucket "raw_listEnv" "ok.empty_null_ptr",
-  bucket "raw_listEnv" "ok.empty_nonnull",
-  bucket "raw_listEnv" "ok.entries",
-  bucket "raw_listEnv" "ok.skipped_malformed",
-  bucket "raw_listEnv" "ok.duplicate_keys",
-  bucket "raw_listEnv" "err.invalidEncoding_key",
-  bucket "raw_listEnv" "err.invalidEncoding_val",
+  bucket "listEnvironBytes" "ok.empty_null_ptr",
+  bucket "listEnvironBytes" "ok.empty_nonnull",
+  bucket "listEnvironBytes" "ok.entries",
   bucket "listEnv" "ok",
+  bucket "listEnv" "ok.skipped_malformed",
+  bucket "listEnv" "ok.duplicate_keys",
   bucket "listEnv" "err.invalidEncoding_key",
   bucket "listEnv" "err.invalidEncoding_val",
   bucket "homeDir" "ok",
@@ -957,7 +920,7 @@ private def genSplitPathString (r : Rng) : String × Rng := Id.run do
       segs := seg :: segs
   return (":".intercalate segs.reverse, cur)
 
-private def genMapRawErr (r : Rng) : LeanSwe.EnvVars.Raw.EnvVarsRawError × Rng :=
+private def genMapRawErr (r : Rng) : EnvVarsRawError × Rng :=
   let (kind, r1) := r.nextNat 4
   let (hasKey, r2) := r1.nextBool
   let (keyStr, r3) := genAsciiString r2 0 16
@@ -1213,13 +1176,16 @@ private def runExecveSmokeCheck : IO Unit := do
       setErr? := some s!"rawFuzzSet failed r0={r0} r1={r1}"
     else
       rawFuzzInstall 0
-      let rawLst ← LeanSwe.EnvVars.Raw.listEnv
-      let rawFoo ← LeanSwe.EnvVars.Raw.getEnv "FOO"
+      let rawBytes ← LeanSwe.EnvVars.listEnvironBytes
+      let hiLst ← LeanSwe.EnvVars.listEnv
+      let hiFoo ← LeanSwe.EnvVars.getEnv "FOO"
       let hiEmpty ← LeanSwe.EnvVars.getEnv "EMPTY"
-      if !exceptEq rawFoo (.ok (some "bar=baz")) || !exceptEq hiEmpty (.ok (some "")) then
-        setErr? := some s!"execve-shim raw/high mismatch rawFoo={repr rawFoo} hiEmpty={repr hiEmpty}"
-      if let .error e := rawLst then
-        setErr? := some s!"execve-shim raw listEnv failed: {repr e}"
+      if rawBytes != #["FOO=bar=baz".toUTF8, "EMPTY=".toUTF8] then
+        setErr? := some s!"execve-shim listEnvironBytes mismatch size={rawBytes.size}"
+      if !exceptEq hiFoo (.ok (some "bar=baz")) || !exceptEq hiEmpty (.ok (some "")) then
+        setErr? := some s!"execve-shim getEnv mismatch hiFoo={repr hiFoo} hiEmpty={repr hiEmpty}"
+      if let .error e := hiLst then
+        setErr? := some s!"execve-shim listEnv failed: {repr e}"
   finally
     rawFuzzEnd
   if let some errMsg := setErr? then
@@ -1228,9 +1194,8 @@ private def runExecveSmokeCheck : IO Unit := do
 private def smokeRandomBuckets : Array CoverageBucket := #[
   bucket "setenv" "ok.insert",
   bucket "unsetenv" "ok.absent",
-  bucket "raw_getEnv" "ok.none_unset",
   bucket "getEnv" "ok.none",
-  bucket "raw_listEnv" "ok.entries",
+  bucket "listEnvironBytes" "ok.entries",
   bucket "listEnv" "ok",
   bucket "homeDir" "err.notFound_unset",
   bucket "splitSearchPath" "nonempty"
@@ -1598,7 +1563,7 @@ def runSelfTestShrink (seedVal : UInt64) : IO Unit := do
 
     IO.println s!"ENVVARS_SHRINK_SELFTEST_OK: original={injected.size} shrunk={shrunk.size} val_size={shrunkValSize} raw_table_shrunk=1x1 bad_key_slice={shrunkSliceSize} np2_trials={np2Trials} interior_len={interiorLen} coupled={coupledLens}"
 
-/-- Differential fuzzing suite for `LeanSwe.EnvVars` and `LeanSwe.EnvVars.Raw` over glibc `setenv`/`unsetenv`/`clearenv`/`environ`. -/
+/-- Differential fuzzing suite for `LeanSwe.EnvVars` over glibc `setenv`/`unsetenv`/`clearenv`/`environ`. -/
 def suite : FuzzSuite := {
   name := "envvars"
   description := "Stateful POSIX setenv/unsetenv/clearenv and unrestricted raw environ differential fuzzer"

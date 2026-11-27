@@ -365,7 +365,7 @@ private def suiteTargetPackages : String → Array String
   | "selftest" => #["Fuzz.SelfTest"]
   | "float" => #["LeanSwe.NumParse", "LeanSwe.Toml"]
   | "cmdline" => #["LeanSwe.CmdLine"]
-  | "envvars" => #["LeanSwe.EnvVars.Raw", "LeanSwe.EnvVars"]
+  | "envvars" => #["LeanSwe.EnvVars"]
   | "cryptohash" => #["LeanSwe.CryptoHash.Raw", "LeanSwe.CryptoHash"]
   | "compress" => #["LeanSwe.Compress"]
   | "postfork" => #["LeanSwe.PostFork"]

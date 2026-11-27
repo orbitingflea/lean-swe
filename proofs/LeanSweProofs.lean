@@ -99,10 +99,8 @@ import LeanSweProofs.Json.Proofs.FormatCompress
 import LeanSweProofs.Json.Proofs.FormatPrettyFlat
 import LeanSweProofs.Json.Proofs.FormatPretty
 import LeanSweProofs.Json.Proofs
-import LeanSweProofs.EnvVars.Raw.Model
-import LeanSweProofs.EnvVars.Raw.Model.Refines
-import LeanSweProofs.EnvVars.Raw.Proofs
 import LeanSweProofs.EnvVars.Model
+import LeanSweProofs.EnvVars.Model.Refines
 import LeanSweProofs.EnvVars.Proofs
 import LeanSweProofs.Uuid.Model
 import LeanSweProofs.Uuid.Model.Refines

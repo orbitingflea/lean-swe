@@ -9,9 +9,8 @@ import LeanSweProofs.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSweProofs.LinuxSyscall.TimeRand.Model
 import LeanSwe.PostFork.Types
-import LeanSwe.EnvVars.Raw.Types
-import LeanSweProofs.EnvVars.Raw.Model
-import LeanSweProofs.EnvVars.Raw.Model.Refines
+import LeanSwe.EnvVars.Types
+import LeanSweProofs.EnvVars.Model
 import LeanSwe.Process.Types
 import LeanSwe.Process.Types.Internal
 import LeanSweProofs.Process.Model
@@ -152,8 +151,8 @@ inductive FullRawReq where
   | timeRand (req : TimeRand.TimeRandReq)
   /-- Execute a verified `PostFork.spawn` child launch over `RawFd`. -/
   | postFork (spec : PostFork.ChildSpecM RawFd)
-  /-- Execute an `EnvVars.Raw` environment snapshot/query request. -/
-  | envRaw (req : EnvVars.Raw.Model.PkgStepReq)
+  /-- Execute an `EnvVars` environment snapshot/query request. -/
+  | envRaw (req : EnvVars.Model.PkgStepReq)
 
 instance : Inhabited FullRawReq where
   default := .envRaw .listEnvironBytes
@@ -170,8 +169,8 @@ inductive FullRawOut where
   | timeRand (out : TimeRand.TimeRandOutcome)
   /-- Decoded `PostFork.spawn` outcome. -/
   | postFork (out : RawFdPostForkOut)
-  /-- Decoded `EnvVars.Raw` outcome. -/
-  | envRaw (out : EnvVars.Raw.Model.PkgStepOut)
+  /-- Decoded `EnvVars` outcome. -/
+  | envRaw (out : EnvVars.Model.PkgStepOut)
 
 instance : Inhabited FullRawOut where
   default := .envRaw default
@@ -184,9 +183,9 @@ def execFullRawStep {W : Type} (sys : Internal.ProcessSysCapsM (StateM W)) :
   | .poll entries to? => (fun res => .poll (rawFdPollOutOf res)) <$> sys.poll.ppoll entries to?
   | .timeRand r => .timeRand <$> TimeRand.execTimeRandReq sys.timeRand r
   | .postFork spec => (fun res => .postFork (rawFdPostForkOutOf res)) <$> sys.postFork.spawn spec
-  | .envRaw r => .envRaw <$> EnvVars.Raw.Model.execPkgStep sys.envRaw r
+  | .envRaw r => .envRaw <$> EnvVars.Model.execPkgStep sys.envRaw r
 
-/-- Healthy OS world state across `LinuxSyscall.{Process,Files,TimeRand}` and `EnvVars.Raw`. -/
+/-- Healthy OS world state across `LinuxSyscall.{Process,Files,TimeRand}` and `EnvVars`. -/
 structure FullHostWorld where
   /-- Healthy Linux process environment. -/
   proc : LinuxSyscall.Process.HealthyEnv := LinuxSyscall.Process.HealthyEnv.initial
@@ -195,7 +194,7 @@ structure FullHostWorld where
   /-- Healthy Linux clock/random environment. -/
   time : TimeRand.HealthyEnv := TimeRand.HealthyEnv.initial
   /-- Ambient POSIX `environ(7)` byte table. -/
-  env : EnvVars.Raw.Model.EnvironState := { entries := #["PATH=/bin:/usr/bin".toUTF8] }
+  env : EnvVars.Model.EnvironState := { entries := #["PATH=/bin:/usr/bin".toUTF8] }
 
 instance : Inhabited FullHostWorld where
   default := {}
@@ -252,7 +251,7 @@ def allowedFullRawStep (w : FullHostWorld) (req : FullRawReq) (out : FullRawOut)
     w'.proc = w.proc ∧
     w'.files = w.files ∧
     w'.time = w.time ∧
-    EnvVars.Raw.Model.allowedPkgStep w.env r eo w'.env
+    EnvVars.Model.allowedPkgStep w.env r eo w'.env
   | _, _ => False
 
 /-- Project a `(handleId, ProcSlotM fd)` entry into a public `ProcessHandleEntry`. -/

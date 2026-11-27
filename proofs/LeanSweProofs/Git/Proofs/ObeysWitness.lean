@@ -65,6 +65,7 @@ private def modelEnvApi : EnvVarsApiM (StateM GitHostState) :=
     getEnv := fun k s => (LeanSwe.EnvVars.Model.getEnvModel s.env k, s)
     listEnv := fun s => (LeanSwe.EnvVars.Model.listEnvModel s.env, s)
     homeDir := fun s => (LeanSwe.EnvVars.Model.homeDirModel s.env, s)
+    listEnvironBytes := fun s => (s.env.entries, s)
     splitSearchPath := LeanSwe.EnvVars.Model.splitSearchPathModel }
 
 private def emptyExecResult : ExecResult :=

@@ -313,7 +313,7 @@ private theorem resolveOptionsTR_except_eq {W : Type} (proj : W → Model.CmdLin
     | none => dsimp only [Bind.bind, Pure.pure, Id.instMonad]; exact stepCase []
     | some p => dsimp only [Bind.bind, Pure.pure, Id.instMonad]; exact stepCase p.2
 
-private def hostEnvStateOps (env : LeanSwe.EnvVars.Raw.Model.EnvironState) : CliOpsM (StateM Unit) :=
+private def hostEnvStateOps (env : LeanSwe.EnvVars.Model.EnvironState) : CliOpsM (StateM Unit) :=
   { readLine := pure none
     writeOut := fun _ => pure ()
     writeErr := fun _ => pure ()

@@ -157,7 +157,7 @@ theorem schedFrameConcOps_obeysConcFrame {BaseW : Type} (inv : BaseW → Prop)
 
 /-- Base simulation world pairing `(HealthySimState × EnvironState)` with `ProcTableState RawFd`. -/
 abbrev SimCellWorld : Type :=
-  (Model.Internal.HealthySimState × EnvVars.Raw.Model.EnvironState) × Internal.ProcTableState RawFd
+  (Model.Internal.HealthySimState × EnvVars.Model.EnvironState) × Internal.ProcTableState RawFd
 
 private noncomputable def witnessRawFd : RawFd :=
   Classical.choice inferInstance
@@ -247,16 +247,19 @@ noncomputable def simFullSysCaps : Internal.ProcessSysCapsM (StateM (SimCellWorl
         (.ok { pid := 100, pgid := some 100 },
          ((({ hs with child100? := some (.exited 0) }, env), tbl), step)) }
   envRaw :=
-    { mapRawError := EnvVars.Raw.Model.mapRawErrorModel
+    { mapRawError := EnvVars.Model.mapRawErrorModel
       getEnv := fun key (((hs, env), tbl), step) =>
-        (EnvVars.Raw.Model.rawGetEnvModel env key, (((hs, env), tbl), step))
+        (EnvVars.Model.getEnvModel env key, (((hs, env), tbl), step))
       listEnv := fun (((hs, env), tbl), step) =>
-        (EnvVars.Raw.Model.rawListEnvModel env, (((hs, env), tbl), step))
+        (EnvVars.Model.listEnvModel env, (((hs, env), tbl), step))
+      homeDir := fun (((hs, env), tbl), step) =>
+        (EnvVars.Model.homeDirModel env, (((hs, env), tbl), step))
       listEnvironBytes := fun (((hs, env), tbl), step) =>
-        (env.entries, (((hs, env), tbl), step)) }
+        (env.entries, (((hs, env), tbl), step))
+      splitSearchPath := EnvVars.Model.splitSearchPathModel }
 
 private theorem projSimFullRaw_wf (hs : Model.Internal.HealthySimState)
-    {env : EnvVars.Raw.Model.EnvironState} (hEnv : env.isWellFormed = true)
+    {env : EnvVars.Model.EnvironState} (hEnv : env.isWellFormed = true)
     (tbl : Internal.ProcTableState RawFd) (step : Nat) :
     Model.fullRawWf (projSimFullRaw (((hs, env), tbl), step)) = true := by
   unfold Model.fullRawWf projSimFullRaw

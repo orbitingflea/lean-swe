@@ -36,7 +36,7 @@ private def buildFdBoxObj (pkg : NPackage __name__) (tag : String) : FetchM (Job
 
 extern_lib «leanswe_envvars» pkg := do
   let oFile := pkg.buildDir / "c" / "envvars_shim.o"
-  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "EnvVars" / "Raw" / "c" / "envvars_shim.c")
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "EnvVars" / "c" / "envvars_shim.c")
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]
