@@ -151,22 +151,6 @@ extern_lib «leanswe_poll_fuzz_env» pkg := do
   let name := nameToStaticLib "leanswe_poll_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
-extern_lib «leanswe_net_fuzz_env» pkg := do
-  let rootPkg ← rootLeanSwePkg
-  let cDir := rootPkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
-  let fDir := pkg.dir / "Fuzz" / "LinuxSyscall" / "c"
-  let hdrJob ← inputTextFile (cDir / "fd_box.h")
-  let srcJob ← inputTextFile (fDir / "net_fuzz_env.c")
-  let deps := Job.collectArray #[hdrJob, srcJob]
-  let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "c" / "linux_net_fuzz_env.o"
-  let oJob ← buildO oFile (deps.map fun _ => fDir / "net_fuzz_env.c")
-    #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "net_fuzz"
-  let name := nameToStaticLib "leanswe_net_fuzz_env"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
-
 @[default_target]
 lean_exe «leanswe-fuzz» where
   root := `Fuzz.Main

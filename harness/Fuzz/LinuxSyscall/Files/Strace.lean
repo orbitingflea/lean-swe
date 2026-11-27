@@ -7,7 +7,6 @@ import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.Files.Impl
 import Fuzz.LinuxSyscall.Env
 import Fuzz.LinuxSyscall.SandboxEnv
-import LeanSwe.LinuxSyscall.Sandbox.Interface
 
 namespace Fuzz.LinuxSyscall.Files.Strace
 
@@ -4004,8 +4003,8 @@ private def encodeBpfInsn (code : UInt16) (jt jf : UInt8) (k : UInt32) : Array U
     UInt8.ofNat ((k.toNat / 65536) % 256), UInt8.ofNat ((k.toNat / 16777216) % 256)]
 
 private def runAtEaccessSeccompChild (sentinelPath : ByteArray) : IO UInt32 := do
-  match ← LeanSwe.LinuxSyscall.Sandbox.prctl .setNoNewPrivs with
-  | .ok _ => pure ()
+  match ← Fuzz.LinuxSyscall.SandboxEnv.setNoNewPrivs with
+  | .ok () => pure ()
   | .error _ => return 77
   let progBytes := ByteArray.mk (
     encodeBpfInsn 0x0020 0 0 0 ++
@@ -4014,8 +4013,8 @@ private def runAtEaccessSeccompChild (sentinelPath : ByteArray) : IO UInt32 := d
     encodeBpfInsn 0x0015 1 0 0x200 ++
     encodeBpfInsn 0x0006 0 0 0x00050001 ++
     encodeBpfInsn 0x0006 0 0 0x7FFF0000)
-  match ← LeanSwe.LinuxSyscall.Sandbox.seccomp .setModeFilter {} progBytes with
-  | .ok _ => pure ()
+  match ← Fuzz.LinuxSyscall.SandboxEnv.installRawSeccomp progBytes with
+  | .ok () => pure ()
   | .error _ => return 77
   match ← defaultOps.faccessat none sentinelPath { read := true } { eaccess := false } with
   | .error e => if e != Errno.EPERM then return 2
