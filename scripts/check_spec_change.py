@@ -3,9 +3,8 @@
 
 Locked spec files (`Core/*.lean`, `LeanSwe/**/{Types,Model,Interface,Properties,ModelChecks}.lean`,
 `LeanSwe/**/{Types,Model,Interface,Properties,ModelChecks}/**/*.lean`, and locked spec metadata
-files `scripts/package_manifest.json`, `scripts/external_assumptions.json`, and
-`scripts/coverage_overrides.json`, except brand-new `LeanSwe/<Pkg>` packages absent at the base
-commit) always require a PR label. `SpecTests.lean` and `SpecTests/**/*.lean` are intentionally
+files `scripts/package_manifest.json` and `scripts/external_assumptions.json`, except brand-new
+`LeanSwe/<Pkg>` packages absent at the base commit) always require a PR label. `SpecTests.lean` and `SpecTests/**/*.lean` are intentionally
 unlocked (`#153`).
 Every top-level unit in a Lean file is split at unindented column-0 boundaries outside nested
 block comments (`/- ... -/`), doc comments (`/-- ... -/`), string literals (including
@@ -29,8 +28,7 @@ editing doc comments, or adding `assume`), removal, rename/copy, middle insertio
 `@[...]` attributes, embedded/indented/same-line extra commands, non-declaration directive, or
 non-strengthening edit to locked spec metadata JSON files (including downgrading a package from
 `"kind": "model"` to `"kind": "property"` or `external_boundary: true -> false`, removing a
-package/dep/`fuzz_suite`, or editing `scripts/external_assumptions.json` /
-`scripts/coverage_overrides.json`) requires `spec-change`.
+package/dep/`fuzz_suite`, or editing `scripts/external_assumptions.json`) requires `spec-change`.
 
 When `scripts/package_manifest.json` is present in `base` or `head`, manifest integrity is
 enforced unconditionally: 100% package coverage under `LeanSwe/`, zero orphan entries, no
@@ -52,11 +50,9 @@ SPEC_SUBDIRS = frozenset({"Types", "Model", "Interface", "Properties", "ModelChe
 SPEC_BASENAMES = frozenset(f"{d}.lean" for d in SPEC_SUBDIRS)
 PACKAGE_MANIFEST_PATH = "scripts/package_manifest.json"
 EXTERNAL_ASSUMPTIONS_PATH = "scripts/external_assumptions.json"
-COVERAGE_OVERRIDES_PATH = "scripts/coverage_overrides.json"
 LOCKED_SPEC_JSON_PATHS = frozenset({
     PACKAGE_MANIFEST_PATH,
     EXTERNAL_ASSUMPTIONS_PATH,
-    COVERAGE_OVERRIDES_PATH,
 })
 FUZZ_SUITES_PATH = "harness/Fuzz/suites.json"
 NON_PACKAGE_SUBDIRS = frozenset({
