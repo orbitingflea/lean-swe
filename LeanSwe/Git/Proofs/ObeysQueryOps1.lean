@@ -4,6 +4,7 @@ import LeanSwe.Git.Model
 import LeanSwe.Git.Model.Refines
 import LeanSwe.Git.Impl
 import LeanSwe.Git.Proofs.ObeysBase
+import LeanSwe.Git.Proofs.ParserProofs
 
 set_option Elab.async false
 
@@ -20,6 +21,7 @@ theorem obeys_isRepo {W : Type} {proj : W → GitHostState} {caps : GitHostCapsM
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [.notARepo, .parseError] (fun _ => True) r.1 := by
   unfold Impl.isRepoImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -63,6 +65,7 @@ theorem obeys_repoRoot {W : Type} {proj : W → GitHostState} {caps : GitHostCap
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun _ => True) r.1 := by
   unfold Impl.repoRootImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -96,6 +99,7 @@ theorem obeys_commonDir {W : Type} {proj : W → GitHostState} {caps : GitHostCa
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun _ => True) r.1 := by
   unfold Impl.commonDirImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -129,6 +133,7 @@ theorem obeys_headCommit {W : Type} {proj : W → GitHostState} {caps : GitHostC
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun c? => c?.all (fun c => isValidCommitIdStr c.hex) = true) r.1 := by
   unfold Impl.headCommitImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -154,6 +159,7 @@ theorem obeys_headCommit {W : Type} {proj : W → GitHostState} {caps : GitHostC
         | ok s =>
           dsimp only
           have hCid := mkCommitId_spec (Impl.trimTrailingNewlines s)
+          rw [mkCommitIdImpl_eq]
           cases hc : mkCommitId (Impl.trimTrailingNewlines s) with
           | error e =>
             rw [hc] at hCid
@@ -192,6 +198,7 @@ theorem obeys_headBranch {W : Type} {proj : W → GitHostState} {caps : GitHostC
     allowedGuardedStep (proj w) (proj r.2) ((validateFsPathArg p).mapError (·.kind))
       [] (fun b? => b?.all (fun b => isValidRefNameStr b.raw) = true) r.1 := by
   unfold Impl.headBranchImpl Impl.validateRepoPath
+  rw [validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -219,6 +226,7 @@ theorem obeys_headBranch {W : Type} {proj : W → GitHostState} {caps : GitHostC
           let raw := Impl.trimTrailingNewlines s
           let stripped := if raw.startsWith "refs/heads/" then String.ofList (raw.toList.drop 11) else raw
           have hRef := mkRefName_spec stripped
+          rw [mkRefNameImpl_eq]
           cases hc : mkRefName stripped with
           | error e =>
             rw [hc] at hRef
@@ -328,19 +336,17 @@ theorem obeys_revParseCommit {W : Type} {proj : W → GitHostState} {caps : GitH
     allowedGuardedStep (proj w) (proj r.2) (preValidateRevParseCommit p rev)
       [] (fun cid => isValidCommitIdStr cid.hex = true) r.1 := by
   unfold Impl.revParseCommitImpl Impl.validateRepoPath preValidateRevParseCommit
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hRev : isValidRevSpec rev with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidRevSpecImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidRevSpec rev)).symm with hRev | hRev
+    · simp only [hRev, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
+    · simp only [hRev, Bool.not_true, Bool.false_eq_true, ↓reduceIte, allowedGuardedStep]
       rw [stateM_bind_run]
       have hRaw := runGitRaw_caps_step hCaps
         { cwd := some p, args := #["rev-parse", "-q", "--verify", rev ++ "^{commit}"] } w hwf
@@ -360,6 +366,7 @@ theorem obeys_revParseCommit {W : Type} {proj : W → GitHostState} {caps : GitH
           | ok s =>
             dsimp only
             have hCid := mkCommitId_spec (Impl.trimTrailingNewlines s)
+            rw [mkCommitIdImpl_eq]
             cases hc : mkCommitId (Impl.trimTrailingNewlines s) with
             | error e =>
               rw [hc] at hCid

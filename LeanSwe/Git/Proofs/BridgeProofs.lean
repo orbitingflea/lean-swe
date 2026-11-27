@@ -59,11 +59,11 @@ private theorem runGitRaw_repo_ok (args : Array String)
         callCount := st.callCount + 1 }) := by
   have hCwdOk : Impl.validateCwd? (some "/repo") = .ok () := by
     unfold Impl.validateCwd?
-    simp [show isValidPathArg "/repo" = true from by decide]
+    simp [isValidPathArgImpl_eq, show isValidPathArg "/repo" = true from by decide]
   have hExtraOk : Impl.validateExtraEnv #[] = .ok () := by
     unfold Impl.validateExtraEnv; simp
   unfold Impl.runGitRaw
-  simp only [hCwdOk, hExtraOk, hArgs, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+  simp only [hasNulCharImpl_eq, cleanGitEnvImpl_eq, hCwdOk, hExtraOk, hArgs, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
     bind, StateT.bind, mockRawOps]
   rw [hHand]
 
@@ -159,7 +159,7 @@ private theorem headBranch_run_ok (rootStr commStr sha1 sha2 sha0 : String)
   rw [show ("refs/heads/topic".startsWith "refs/heads/") = true from by cbv]
   simp only [↓reduceIte]
   rw [show String.ofList ("refs/heads/topic".toList.drop 11) = "topic" from by cbv]
-  rw [show mkRefName "topic" = .ok { raw := "topic" } from by cbv]
+  rw [mkRefNameImpl_eq, show mkRefName "topic" = .ok { raw := "topic" } from by cbv]
   rfl
 
 private theorem headState_delegation_ok (rootStr commStr sha1 sha2 sha0 : String)
@@ -206,7 +206,7 @@ private theorem headState_delegation_ok (rootStr commStr sha1 sha2 sha0 : String
   simp only [beq_self_eq_true, ↓reduceIte]
   rw [decodeUtf8Checked_toUTF8]
   dsimp only [StateT.pure]
-  have hCid : mkCommitId (Impl.trimTrailingNewlines (sha1 ++ "\n")) = .ok { hex := sha1 } := by cbv
+  have hCid : Impl.mkCommitIdImpl (Impl.trimTrailingNewlines (sha1 ++ "\n")) = .ok { hex := sha1 } := by cbv
   rw [hCid]
   exact ⟨rfl, rfl⟩
 
@@ -241,7 +241,7 @@ private theorem mergeBase_delegation_ok (rootStr commStr sha1 sha2 sha0 : String
       .ok (some { hex := sha0 }) ∧
     (Impl.mergeBaseImpl mockRawOps "/repo" { hex := sha1 } { hex := sha2 } st₀).2.callCount = 1
   unfold Impl.mergeBaseImpl
-  simp only [hRepoOk,
+  simp only [hRepoOk, isValidCommitIdStrImpl_eq,
     show (!isValidCommitIdStr sha1 || !isValidCommitIdStr sha2) = false from by cbv,
     Bool.false_eq_true, ↓reduceIte, bind, StateT.bind, pure]
   rw [hRaw]
@@ -249,7 +249,7 @@ private theorem mergeBase_delegation_ok (rootStr commStr sha1 sha2 sha0 : String
   simp only [beq_self_eq_true, ↓reduceIte]
   rw [decodeUtf8Checked_toUTF8]
   dsimp only [StateT.pure]
-  have hMk : mkCommitId (Impl.trimTrailingNewlines (sha0 ++ "\n")) = .ok { hex := sha0 } := by cbv
+  have hMk : Impl.mkCommitIdImpl (Impl.trimTrailingNewlines (sha0 ++ "\n")) = .ok { hex := sha0 } := by cbv
   rw [hMk]
   exact ⟨rfl, rfl⟩
 
@@ -281,7 +281,7 @@ private theorem status_delegation_ok (rootStr commStr sha1 sha2 sha0 : String)
   simp only [hRepoOk, bind, StateT.bind, pure]
   rw [hChk]
   dsimp only [StateT.pure]
-  exact ⟨rfl, rfl⟩
+  exact ⟨parsePorcelainStatusZImpl_eq statusBytes, rfl⟩
 
 private theorem diffNameStatus_delegation_ok (rootStr commStr sha1 sha2 sha0 : String)
     (statusBytes diffBytes wtBytes : ByteArray) :
@@ -317,10 +317,10 @@ private theorem diffNameStatus_delegation_ok (rootStr commStr sha1 sha2 sha0 : S
   have hDiffArgs :
       (#["diff", "--name-status", "-z", "HEAD"] ++ (#[] : Array String) ++
         #["--"] ++ (#[] : Array String)) = args := rfl
-  simp only [hRepoOk, hRev, hPaths, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, StateT.bind, pure]
+  simp only [hRepoOk, isValidStrictRevSpecImpl_eq, isValidPathArgImpl_eq, hRev, hPaths, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind, StateT.bind, pure]
   rw [hDiffArgs, hChk]
   dsimp only [StateT.pure]
-  exact ⟨rfl, rfl⟩
+  exact ⟨parseDiffNameStatusZImpl_eq diffBytes, rfl⟩
 
 private theorem listWorktrees_delegation_ok (rootStr commStr sha1 sha2 sha0 : String)
     (statusBytes diffBytes wtBytes : ByteArray) :
@@ -354,7 +354,7 @@ private theorem listWorktrees_delegation_ok (rootStr commStr sha1 sha2 sha0 : St
   simp only [hRepoOk, bind, StateT.bind, pure]
   rw [hChk]
   dsimp only [StateT.pure]
-  exact ⟨rfl, rfl⟩
+  exact ⟨parseWorktreeListPorcelainImpl_eq wtBytes, rfl⟩
 
 /-- Proof of `test_git_raw_mkApi_queryAndParserDelegation` for `Impl.mkApiM`. -/
 theorem proof_git_raw_mkApi_queryAndParserDelegation :

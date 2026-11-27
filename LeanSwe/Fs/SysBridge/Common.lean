@@ -2,14 +2,82 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Model
 
 namespace LeanSwe.Fs.SysBridge
 
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (mapRawError isValidRawPath)
+
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Classify common Linux `errno` codes used across `otherError` and `inappropriateType`. -/
+def classifyErrno (code : UInt32) (defaultKind : FsErrorKind) : FsErrorKind :=
+  match code.toNat with
+  | 1 | 13 | 30 => .permissionDenied
+  | 2 => .notFound
+  | 17 => .alreadyExists
+  | 20 => .notADirectory
+  | 21 => .isADirectory
+  | 22 | 36 => .invalidInput
+  | 38 | 95 => .unsupported
+  | 39 | 66 => .notEmpty
+  | _ => defaultKind
+
+/-- Convert raw OS error records into normalized `FsError` values with non-empty messages. -/
+def mapRawError : FsRawError → FsError
+  | .noFileOrDirectory path code detail =>
+    { kind := .notFound
+      path := some path
+      errnoCode := some code
+      message := nonEmptyMsg s!"no such file or directory: {path}" detail }
+  | .alreadyExists path? code detail =>
+    { kind := .alreadyExists
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "file or directory already exists" detail }
+  | .permissionDenied path? code detail =>
+    { kind := .permissionDenied
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "permission denied" detail }
+  | .inappropriateType path? code detail =>
+    { kind := classifyErrno code .ioError
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "inappropriate file type" detail }
+  | .invalidArgument path? code detail =>
+    { kind := .invalidInput
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "invalid argument" detail }
+  | .wouldBlock path? code detail =>
+    { kind := .wouldBlock
+      path := path?
+      errnoCode := some code
+      message := nonEmptyMsg "resource temporarily unavailable" detail }
+  | .unsupportedOperation code detail =>
+    { kind := .unsupported
+      path := none
+      errnoCode := some code
+      message := nonEmptyMsg "unsupported filesystem operation" detail }
+  | .otherError code detail =>
+    { kind := classifyErrno code .ioError
+      path := none
+      errnoCode := some code
+      message := nonEmptyMsg s!"os error {code}" detail }
+  | .userError detail =>
+    { kind := .ioError
+      path := none
+      errnoCode := none
+      message := nonEmptyMsg "filesystem error" detail }
+
+/-- Return `true` iff `path` is non-empty, NUL-free, and lacks a non-root trailing `'/'`. -/
+def isValidRawPath (path : String) : Bool :=
+  let cs := path.toList
+  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
 
 /-- Map a Linux `Errno` honestly into `FsError` (`EMFILE`/`ENFILE` map to `.ioError`; never returns `.wouldBlock`). -/
 def mapErrno (path? : Option String) (ctx : String) (e : Errno) : FsError :=

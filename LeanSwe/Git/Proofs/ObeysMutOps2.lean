@@ -21,19 +21,17 @@ private theorem obeys_switch {W : Type} {proj : W → GitHostState} {caps : GitH
     allowedGuardedStep (proj w) (proj r.2) (preValidateSwitch p b create sp?)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.switchImpl Impl.validateRepoPath preValidateSwitch
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hb : isValidRefNameStr b.raw with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidRefNameStrImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidRefNameStr b.raw)).symm with hb | hb
+    · simp only [hb, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hb, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       cases hCr : (!create && sp?.isSome) with
       | true =>
         simp only [↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -49,6 +47,7 @@ private theorem obeys_switch {W : Type} {proj : W → GitHostState} {caps : GitH
                 (if create then #[if force then "-C" else "-c", b.raw] else #[b.raw]) ++ #[] } w hwf <;> (intro _; rfl)
         | some sp =>
           dsimp only
+          rw [isValidStrictRevSpecImpl_eq]
           cases hSp : isValidStrictRevSpec sp with
           | false =>
             simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -67,19 +66,17 @@ private theorem obeys_reset {W : Type} {proj : W → GitHostState} {caps : GitHo
     allowedGuardedStep (proj w) (proj r.2) (preValidateReset p rev)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.resetImpl Impl.validateRepoPath preValidateReset
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hr : isValidStrictRevSpec rev with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidStrictRevSpecImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidStrictRevSpec rev)).symm with hr | hr
+    · simp only [hr, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hr, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       apply bind_checked_unit_parse hCaps "reset"
         { cwd := some p
           args := #["reset", match mode with | .soft => "--soft" | .mixed => "--mixed" | .hard => "--hard", rev, "--"] } w hwf <;> (intro _; rfl)
@@ -92,19 +89,17 @@ private theorem obeys_fetch {W : Type} {proj : W → GitHostState} {caps : GitHo
     allowedGuardedStep (proj w) (proj r.2) (preValidateFetch p rem ref?)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.fetchImpl Impl.validateRepoPath preValidateFetch
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
     exact ⟨trivial, hwf, trivial, validateFsPathArg_err_nonEmpty hv⟩
   | ok _ =>
-    simp only [Except.mapError]
-    cases hRem : isValidRemoteOrRefspec rem with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+    simp only [Except.mapError, isValidRemoteOrRefspecImpl_eq]
+    rcases (Bool.eq_false_or_eq_true (isValidRemoteOrRefspec rem)).symm with hRem | hRem
+    · simp only [hRem, Bool.not_false, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
       exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-    | true =>
-      simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    · simp only [hRem, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       cases ref? with
       | none =>
         dsimp only
@@ -112,12 +107,10 @@ private theorem obeys_fetch {W : Type} {proj : W → GitHostState} {caps : GitHo
           { cwd := some p, args := #["fetch"] ++ (if prune then #["--prune"] else #[]) ++ #[rem] ++ #[] } w hwf <;> (intro _; rfl)
       | some r =>
         dsimp only
-        cases hR : isValidRemoteOrRefspec r with
-        | false =>
-          simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
+        rcases (Bool.eq_false_or_eq_true (isValidRemoteOrRefspec r)).symm with hR | hR
+        · simp only [hR, Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
           exact ⟨trivial, hwf, trivial, interp3_ne_empty _ _ _ (by decide)⟩
-        | true =>
-          simp only [↓reduceIte]
+        · simp only [hR, ↓reduceIte]
           apply bind_checked_unit_parse hCaps "fetch"
             { cwd := some p, args := #["fetch"] ++ (if prune then #["--prune"] else #[]) ++ #[rem] ++ #[r] } w hwf <;> (intro _; rfl)
 
@@ -128,7 +121,7 @@ private theorem obeys_worktreeAdd {W : Type} {proj : W → GitHostState} {caps :
     allowedGuardedStep (proj w) (proj r.2) (preValidateWorktreeAdd p opts)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.worktreeAddImpl Impl.validateRepoPath preValidateWorktreeAdd
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv1 : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]
@@ -188,10 +181,12 @@ private theorem obeys_worktreeAdd {W : Type} {proj : W → GitHostState} {caps :
                 { cwd := some p
                   args := #["worktree", "add"] ++ (if opts.force then #["--force"] else #[]) ++
                     (if opts.detach then #["--detach"] else #[]) ++ bArgs ++ #["--", opts.path] ++ #[t] } w hwf <;> (intro _; rfl)
+        simp only [isValidStrictRevSpecImpl_eq]
         cases opts.newBranch? with
         | none => exact hAfterBranch #[]
         | some b =>
           dsimp only
+          rw [isValidRefNameStrImpl_eq]
           cases hb : isValidRefNameStr b.raw with
           | false =>
             simp only [Bool.false_eq_true, ↓reduceIte, stateM_pure_run, allowedGuardedStep]
@@ -207,7 +202,7 @@ private theorem obeys_worktreeRemove {W : Type} {proj : W → GitHostState} {cap
     allowedGuardedStep (proj w) (proj r.2) (preValidateWorktreeRemove p wt)
       [.parseError] (fun _ => True) r.1 := by
   unfold Impl.worktreeRemoveImpl Impl.validateRepoPath preValidateWorktreeRemove
-  simp only [except_bind_eq, Except.bind]
+  simp only [except_bind_eq, Except.bind, validateFsPathArgImpl_eq]
   cases hv1 : validateFsPathArg p with
   | error e =>
     simp only [Except.mapError, stateM_pure_run, allowedGuardedStep]

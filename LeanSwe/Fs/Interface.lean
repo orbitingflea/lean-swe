@@ -1,7 +1,7 @@
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Model.HealthyStep
+import LeanSwe.Fs.Types.Internal
 import LeanSwe.Fs.Impl
 import LeanSwe.Fs.SysBridge
 
@@ -11,13 +11,13 @@ namespace Internal
 
 /-- Build a generic `FsApiM m` directly over a `FsSysCapsM m` (`LinuxSyscall.Files` + `LinuxSyscall.TimeRand`) capability bundle. -/
 def mkApiFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
-    (caps : Model.FsSysCapsM m) : FsApiM m :=
+    (caps : FsSysCapsM m) : FsApiM m :=
   mkApiFromScopedRawRetryM
     (toScopedRawFsOpsM (SysBridge.mkRawFsOpsM caps.files (SysBridge.nextTimeRandNonce caps.timeRand)))
 
 /-- Construct a `SubtreeOpenerM m` directly over a `FsSysCapsM m` (`LinuxSyscall.Files` + `LinuxSyscall.TimeRand`) capability bundle. -/
 def mkSubtreeOpenerFromCapsM {m : Type → Type} [Monad m] [MonadFinally m]
-    (caps : Model.FsSysCapsM m) : SubtreeOpenerM m :=
+    (caps : FsSysCapsM m) : SubtreeOpenerM m :=
   mkSubtreeOpenerM (SysBridge.mkRawDirOpsM caps.files (SysBridge.nextTimeRandNonce caps.timeRand))
 
 end Internal

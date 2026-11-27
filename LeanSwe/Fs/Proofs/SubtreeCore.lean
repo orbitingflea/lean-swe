@@ -1469,11 +1469,52 @@ theorem validFileName_of_validSeg (s : String) (h : validSeg s = true) :
   simp only [Internal.validFileName, Bool.and_eq_true, Bool.not_eq_true', bne_iff_ne, ne_eq]
   exact ⟨⟨⟨hEmp, hSl⟩, hDot⟩, hDotDot⟩
 
+private theorem model_splitCharList_eq_internal (sep : Char) (cs : List Char) :
+    Model.splitCharList sep cs = Internal.splitCharList sep cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    by_cases h : (c == sep) = true <;> (simp [Model.splitCharList, Internal.splitCharList, h, ih]; try rfl)
+
+private theorem model_joinSlashChars_eq_internal (segs : List (List Char)) :
+    Model.joinSlashChars segs = Internal.joinSlashChars segs := by
+  induction segs with
+  | nil => rfl
+  | cons s rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => simp only [Model.joinSlashChars, Internal.joinSlashChars, ih]
+
+private theorem model_collapseChars_eq_internal (abs : Bool) (segs acc : List (List Char)) :
+    Model.collapseChars abs segs acc = Internal.collapseChars abs segs acc := by
+  induction segs generalizing acc with
+  | nil => rfl
+  | cons seg rest ih =>
+    unfold Model.collapseChars Internal.collapseChars
+    split
+    · exact ih acc
+    · split
+      · cases acc with
+        | nil => exact ih _
+        | cons top tail =>
+          dsimp only
+          split
+          · exact ih tail
+          · exact ih _
+      · exact ih (seg :: acc)
+
+/-- Equivalence between `Model.normPath` and `Internal.normPath`. -/
+theorem model_normPath_eq_internal (p : String) :
+    Model.normPath p = Internal.normPath p := by
+  unfold Model.normPath Internal.normPath
+  simp only [model_splitCharList_eq_internal, model_collapseChars_eq_internal, model_joinSlashChars_eq_internal]
+  rfl
+
 private theorem vfsSplitSegs_joinSlashChars_valid (parts : List (List Char))
     (hParts : ∀ s ∈ parts, !s.isEmpty ∧ '/' ∉ s) :
     vfsSplitSegs (String.ofList ('/' :: Internal.joinSlashChars parts)) = parts.map String.ofList := by
   unfold vfsSplitSegs
-  simp only [String.toList_ofList]
+  simp only [String.toList_ofList, model_splitCharList_eq_internal]
   cases parts with
   | nil => simp [Internal.joinSlashChars, Internal.splitCharList]
   | cons hd tl =>
@@ -1510,8 +1551,8 @@ theorem vfsSplitSegs_pathOfSegs (segs : List String) (hValid : ∀ s ∈ segs, v
 theorem isCanonPath_pathOfSegs (segs : List String) (hValid : ∀ s ∈ segs, validSeg s = true) :
     isCanonPath (pathOfSegs segs) = true := by
   rw [pathOfSegs_eq_ofList_joinSlashChars]
-  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq]
-  refine ⟨by simp [Internal.isAbsolute, Internal.isAbsChars], ?_⟩
+  simp only [isCanonPath, Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal]
+  refine ⟨by simp [Model.isAbsolute, Model.isAbsChars], ?_⟩
   simp only [Internal.normPath, String.toList_ofList, Internal.isAbsChars, ↓reduceIte]
   rw [show Internal.splitCharList '/' ('/' :: Internal.joinSlashChars (segs.map String.toList)) =
       [] :: Internal.splitCharList '/' (Internal.joinSlashChars (segs.map String.toList)) by
@@ -1815,7 +1856,7 @@ theorem pathOfSegs_vfsSplitSegs {k : String} (hK : isCanonPath k = true) :
     (fun _ h => by simp at h) (splitCharList_no_sep '/' k.toList)
   have hKEq : k = String.ofList ('/' :: Internal.joinSlashChars
       (Internal.collapseChars true (Internal.splitCharList '/' k.toList) [])) := by
-    calc k = Internal.normPath k := hNorm.symm
+    calc k = Internal.normPath k := (model_normPath_eq_internal k ▸ hNorm).symm
       _ = _ := by simp [Internal.normPath, show Internal.isAbsChars k.toList = true from hAbs]
   have hSp : vfsSplitSegs k =
       (Internal.collapseChars true (Internal.splitCharList '/' k.toList) []).map String.ofList := by
@@ -1862,7 +1903,7 @@ theorem mDirHasLiveChild_false_of_treeEmpty (st : VfsState) (pos : List String)
         simp only [Bool.false_eq_true, ↓reduceIte, pathOfSegs_eq_ofList_joinSlashChars,
           String.toList_append, String.toList_ofList, show "/".toList = ['/'] by decide,
           List.append_assoc, List.singleton_append] at hTail
-        simp only [vfsSplitSegs, ← hTail, List.cons_append]
+        simp only [vfsSplitSegs, ← hTail, List.cons_append, model_splitCharList_eq_internal]
         have hParts : ∀ s ∈ ((a :: rest).map String.toList), !s.isEmpty ∧ '/' ∉ s := by
           intro s hs
           simp only [List.mem_map] at hs

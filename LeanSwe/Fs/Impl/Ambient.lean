@@ -1,5 +1,5 @@
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Model
+import LeanSwe.Fs.Types.Internal
 import LeanSwe.Glob.Interface
 
 namespace LeanSwe.Fs.Internal
@@ -7,12 +7,220 @@ namespace LeanSwe.Fs.Internal
 open LeanSwe.Fs
   (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode FsApi FsApiM
    EntryName RelPath SubtreeM SubtreeOpenerM)
-open LeanSwe.Fs.Model (NonLockFsOpsM RawFsOpsM RawDirOpsM ScopedRawFsOpsM nonEmptyMsg isValidRawPath)
 
-export LeanSwe.Fs.Model
-  (isAbsChars isAbsolute join joinMany splitCharList joinSlashChars collapseChars normPath
-   cleanCharSegments splitLastAux splitParentName parent name splitRevAtDot splitNameSuffix
-   stem suffix suffixes validFileName validSuffix joinParentName withName withSuffix relativeTo)
+/-- Return `msg` if non-empty, or `fallback` otherwise. -/
+def nonEmptyMsg (fallback msg : String) : String :=
+  if msg.isEmpty then fallback else msg
+
+/-- Return `true` iff `path` is non-empty, NUL-free, and lacks a non-root trailing `'/'`. -/
+def isValidRawPath (path : String) : Bool :=
+  let cs := path.toList
+  !cs.isEmpty && !(Char.ofNat 0 ∈ cs) && !(cs.length > 1 && cs.getLast? == some '/')
+
+/-- Return `true` iff character list starts with `/`. -/
+def isAbsChars : List Char → Bool
+  | '/' :: _ => true
+  | _ => false
+
+/-- Return `true` iff `path` begins with `/`. -/
+def isAbsolute (path : String) : Bool :=
+  isAbsChars path.toList
+
+/-- Join two path strings using `/` (`Path.joinpath`). -/
+def join (base sub : String) : String :=
+  if isAbsolute sub then sub
+  else if base.isEmpty then sub
+  else if base.toList.getLast? == some '/' then base ++ sub
+  else base ++ "/" ++ sub
+
+/-- Join an array of path strings left-to-right. -/
+def joinMany (parts : Array String) : String :=
+  parts.foldl join ""
+
+/-- Split `cs` on `sep`, always producing a non-empty list of segments. -/
+def splitCharList (sep : Char) : List Char → List (List Char)
+  | [] => [[]]
+  | c :: cs =>
+    if c == sep then
+      [] :: splitCharList sep cs
+    else
+      match splitCharList sep cs with
+      | [] => [[c]]
+      | seg :: rest => (c :: seg) :: rest
+
+/-- Join path segments using `/` separators. -/
+def joinSlashChars : List (List Char) → List Char
+  | [] => []
+  | [s] => s
+  | s :: rest => s ++ '/' :: joinSlashChars rest
+
+/-- Collapse slash-separated path character segments lexically. -/
+def collapseChars (abs : Bool) : List (List Char) → List (List Char) → List (List Char)
+  | [], acc => acc.reverse
+  | seg :: rest, acc =>
+    if seg.isEmpty || seg == ['.'] then
+      collapseChars abs rest acc
+    else if seg == ['.', '.'] then
+      match acc with
+      | top :: tail =>
+        if top != ['.', '.'] then collapseChars abs rest tail
+        else collapseChars abs rest (if abs then acc else ['.', '.'] :: acc)
+      | [] =>
+        collapseChars abs rest (if abs then [] else [['.', '.']])
+    else
+      collapseChars abs rest (seg :: acc)
+
+/-- Lexically normalize `.` and `..` segments and redundant `/` (`os.path.normpath`). -/
+def normPath (path : String) : String :=
+  let cs := path.toList
+  let abs := isAbsChars cs
+  let parts := collapseChars abs (splitCharList '/' cs) []
+  if abs then
+    String.ofList ('/' :: joinSlashChars parts)
+  else if parts.isEmpty then
+    "."
+  else
+    String.ofList (joinSlashChars parts)
+
+/-- Split `path` into non-empty `/` character segments (excluding `.`), tracking `abs`. -/
+def cleanCharSegments (path : String) : Bool × List (List Char) :=
+  let cs := path.toList
+  (isAbsChars cs, (splitCharList '/' cs).filter fun s => !s.isEmpty && s != ['.'])
+
+/-- Split a non-empty list into `(init, last)`. -/
+def splitLastAux {α : Type} : List α → List α → Option (List α × α)
+  | [], _ => none
+  | [x], acc => some (acc.reverse, x)
+  | x :: rest, acc => splitLastAux rest (x :: acc)
+
+/-- Split `path` into optional parent string and final component name. -/
+def splitParentName (path : String) : Option (Option String × String) :=
+  let (abs, parts) := cleanCharSegments path
+  match splitLastAux parts [] with
+  | none => none
+  | some ([], last) =>
+    some (if abs then some "/" else none, String.ofList last)
+  | some (front, last) =>
+    let joined := joinSlashChars front
+    let prefixStr := String.ofList (if abs then '/' :: joined else joined)
+    some (some prefixStr, String.ofList last)
+
+/-- Return parent directory path, or `none` when at root or single bare component. -/
+def parent (path : String) : Option String :=
+  match splitParentName path with
+  | none => none
+  | some (p?, _) => p?
+
+/-- Return the final path component name, if any. -/
+def name (path : String) : Option String :=
+  match splitParentName path with
+  | none => none
+  | some (_, last) => some last
+
+/-- Split reversed character list at the first `.` separator. -/
+def splitRevAtDot : List Char → Option (List Char × List Char)
+  | [] => none
+  | '.' :: rest => some (rest, [])
+  | c :: rest =>
+    match splitRevAtDot rest with
+    | none => none
+    | some (pref, suf) => some (pref, c :: suf)
+
+/-- Split a single filename into `(stem, suffix)` using Python `Path` conventions. -/
+def splitNameSuffix (fileName : String) : String × String :=
+  match splitRevAtDot fileName.toList.reverse with
+  | none => (fileName, "")
+  | some (revPref, revSuf) =>
+    if revPref.isEmpty || revSuf.isEmpty || revPref.all (· == '.') then
+      (fileName, "")
+    else
+      (String.ofList revPref.reverse, "." ++ String.ofList revSuf.reverse)
+
+/-- Return the final path component without its last suffix (`Path.stem`). -/
+def stem (path : String) : Option String :=
+  (name path).map fun n => (splitNameSuffix n).1
+
+/-- Return the last `.ext` suffix of filename, or `""` when none (`Path.suffix`). -/
+def suffix (path : String) : String :=
+  match name path with
+  | none => ""
+  | some n => (splitNameSuffix n).2
+
+/-- Return all `.ext` suffixes of filename (`Path.suffixes`). -/
+def suffixes (path : String) : Array String :=
+  match name path with
+  | none => #[]
+  | some n =>
+    match n.toList.reverse with
+    | '.' :: _ => #[]
+    | _ =>
+      let stripped := n.toList.dropWhile (· == '.')
+      match splitCharList '.' stripped with
+      | [] | [_] => #[]
+      | _ :: exts => (exts.map fun cs => "." ++ String.ofList cs).toArray
+
+/-- Return `true` iff `s` is a valid non-empty single path segment name. -/
+def validFileName (s : String) : Bool :=
+  let cs := s.toList
+  !cs.isEmpty && !('/' ∈ cs) && cs != ['.'] && cs != ['.', '.']
+
+/-- Return `true` iff `s` is empty or a valid non-empty suffix starting with `.`. -/
+def validSuffix (s : String) : Bool :=
+  match s.toList with
+  | [] => true
+  | '.' :: rest => !rest.isEmpty && !('/' ∈ rest) && rest != ['.']
+  | _ => false
+
+/-- Join optional normalized parent prefix with a valid filename `newName`. -/
+def joinParentName : Option String → String → String
+  | none, newName => newName
+  | some "/", newName => "/" ++ newName
+  | some par, newName => par ++ "/" ++ newName
+
+/-- Replace the final path component (`Path.with_name`). -/
+def withName (path newName : String) : Except FsError String :=
+  if !validFileName newName then
+    .error { kind := .invalidInput, path := some path, message := s!"invalid filename: '{newName}'" }
+  else
+    match splitParentName path with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
+    | some (par?, _) => .ok (joinParentName par? newName)
+
+/-- Replace or strip the last suffix (`Path.with_suffix`). -/
+def withSuffix (path newSuffix : String) : Except FsError String :=
+  if !validSuffix newSuffix then
+    .error { kind := .invalidInput, path := some path, message := s!"invalid suffix: '{newSuffix}'" }
+  else
+    match splitParentName path with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := "path has an empty name" }
+    | some (_, oldName) =>
+      let (stemPart, _) := splitNameSuffix oldName
+      if stemPart.isEmpty || stemPart.toList.all (· == '.') then
+        .error { kind := .invalidInput, path := some path, message := "cannot change suffix of dot-only name" }
+      else
+        withName path (stemPart ++ newSuffix)
+
+/-- Strip matching leading segment prefix from `pParts`. -/
+def stripPrefixParts : List (List Char) → List (List Char) → Option (List (List Char))
+  | [], rest => some rest
+  | b :: bs, p :: ps =>
+    if b == p then stripPrefixParts bs ps else none
+  | _ :: _, [] => none
+
+/-- Compute lexical path of `path` relative to `base` (`Path.relative_to`). -/
+def relativeTo (path base : String) : Except FsError String :=
+  let (absP, pParts) := cleanCharSegments (normPath path)
+  let (absB, bParts) := cleanCharSegments (normPath base)
+  if absP != absB then
+    .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
+  else
+    match stripPrefixParts bParts pParts with
+    | none =>
+      .error { kind := .invalidInput, path := some path, message := s!"'{path}' is not in the subpath of '{base}'" }
+    | some [] => .ok "."
+    | some rel => .ok (String.ofList (joinSlashChars rel))
 
 /-- Construct a `GlobError` mapped into `FsError`. -/
 def mapGlobError (pattern : String) (err : LeanSwe.Glob.GlobError) : FsError :=

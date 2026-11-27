@@ -196,8 +196,8 @@ private theorem vfsResolveSegs_dir_child_nofollow (nodes : String → Option Vfs
           | symlink _ _ => rfl
         | symlink target m =>
           simp only [List.nil_append, vfsResolveSegs, hNode]
-          exact ih "/" (vfsSplitSegs (Internal.normPath
-            (if Internal.isAbsolute target then target else Internal.join ((Internal.parent cur).getD "/") target))) hOk
+          exact ih "/" (vfsSplitSegs (Model.normPath
+            (if Model.isAbsolute target then target else Model.join ((Model.parent cur).getD "/") target))) hOk
     | cons seg rest =>
       cases hNode : nodes cur with
       | none => simp [hNode] at hOk
@@ -214,11 +214,11 @@ private theorem vfsResolveSegs_dir_child_nofollow (nodes : String → Option Vfs
             exact ih (vfsChildPath cur seg) rest hOk
         | symlink target m =>
           simp only [List.cons_append, vfsResolveSegs, hNode]
-          have hAssoc : vfsSplitSegs (Internal.normPath
-              (if Internal.isAbsolute target then target else Internal.join ((Internal.parent cur).getD "/") target)) ++
+          have hAssoc : vfsSplitSegs (Model.normPath
+              (if Model.isAbsolute target then target else Model.join ((Model.parent cur).getD "/") target)) ++
               seg :: (rest ++ [lastSeg]) =
-            (vfsSplitSegs (Internal.normPath
-              (if Internal.isAbsolute target then target else Internal.join ((Internal.parent cur).getD "/") target)) ++
+            (vfsSplitSegs (Model.normPath
+              (if Model.isAbsolute target then target else Model.join ((Model.parent cur).getD "/") target)) ++
               seg :: rest) ++ [lastSeg] := by
             simp [List.append_assoc]
           rw [hAssoc]
@@ -537,12 +537,14 @@ private theorem vfsResolveSegs_after_create (s₀ : VfsState) (path parCanon las
   intro s₁
   have hAllSegs : vfsSplitSegs (vfsAbsNorm s₀.cwd path) = parSegs ++ [lastSeg] := by
     simpa using splitLastAux_spec (vfsSplitSegs (vfsAbsNorm s₀.cwd path)) [] parSegs lastSeg hSplit
-  have hAllValid := vfsSplitSegs_normPath_valid
-    (if Internal.isAbsolute path then path else Internal.join s₀.cwd path)
+  have hAllValid : ∀ s ∈ vfsSplitSegs (vfsAbsNorm s₀.cwd path), Internal.validFileName s = true := by
+    unfold vfsAbsNorm
+    rw [model_normPath_eq_internal]
+    exact vfsSplitSegs_normPath_valid _
   have hParValid : ∀ s ∈ parSegs, Internal.validFileName s = true := fun s hs =>
-    hAllValid s (by rw [← vfsAbsNorm, hAllSegs]; simp [hs])
+    hAllValid s (by rw [hAllSegs]; simp [hs])
   have hLastValid : Internal.validFileName lastSeg = true :=
-    hAllValid lastSeg (by rw [← vfsAbsNorm, hAllSegs]; simp)
+    hAllValid lastSeg (by rw [hAllSegs]; simp)
   have hParCanon : isCanonPath parCanon = true :=
     vfsResolveSegs_isCanon s₀.nodes 512 "/" parSegs true (parCanon, .dir parMode) (by decide) hParValid hPar
   have hParLookup : s₀.nodes parCanon = some (.dir parMode) :=

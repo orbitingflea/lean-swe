@@ -252,7 +252,7 @@ private theorem vfsAbsNorm_slash_child (cwd c : String) (hc : Internal.validFile
     simp [Internal.isAbsolute, Internal.isAbsChars, String.toList_append]
   have hNorm : Internal.normPath ("/" ++ c) = "/" ++ c := by
     unfold isCanonPath at hCanon
-    simp only [Bool.and_eq_true, beq_iff_eq] at hCanon
+    simp only [Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal] at hCanon
     exact hCanon.2
   refine ⟨?_, hSp, hChildEq⟩
   rw [vfsAbsNorm_abs cwd ("/" ++ c) hIsAbs, hNorm]
@@ -433,7 +433,7 @@ theorem proof_fsraw_createFileNew_createsMissingWithExactBytes :
     unfold vfsCreateFileNewPure
     rw [hRawValid]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, hAbs, hSplit, hResNf]
-    rw [show Internal.splitLastAux [child] [] = some ([], child) from rfl]
+    rw [show Model.splitLastAux [child] [] = some ([], child) from rfl]
     dsimp only
     rw [hParOk]
     simp only [hW, hX, Bool.or_self, Bool.false_eq_true, ↓reduceIte, hChild]
@@ -567,7 +567,7 @@ theorem proof_fsraw_createFileNew_missingParentRejected :
   have hPathNorm : Internal.normPath ("/" ++ d ++ "/" ++ f) = "/" ++ d ++ "/" ++ f := by
     have hc := hFCanon.1
     unfold isCanonPath at hc
-    simp only [Bool.and_eq_true, beq_iff_eq] at hc
+    simp only [Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal] at hc
     exact hc.2
   have hPathAbsNorm : vfsAbsNorm s₀.cwd ("/" ++ d ++ "/" ++ f) = "/" ++ d ++ "/" ++ f := by
     rw [vfsAbsNorm_abs s₀.cwd _ hPathIsAbs, hPathNorm]
@@ -640,7 +640,7 @@ theorem proof_fsraw_createFileNew_missingParentRejected :
   rw [hRes2]
   have hNeNf : (e2.kind != .notFound) = false := by rw [hKind2]; decide
   simp only [hNeNf, Bool.false_eq_true, ↓reduceIte]
-  rw [show Internal.splitLastAux [d, f] [] = some ([d], f) from rfl]
+  rw [show Model.splitLastAux [d, f] [] = some ([d], f) from rfl]
   dsimp only
   rw [hParNf]
   exact ⟨⟨⟨eNf, rfl, hKindNf⟩, rfl⟩, trivial⟩
@@ -709,9 +709,9 @@ theorem reach_fsraw_readBytes_followsSymlinkToRegularFile :
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide]; simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show vfsChildPath "/" "l" = "/l" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/l" = some (.symlink "/f" 0o777) from rfl]; dsimp only
-    rw [show Internal.isAbsolute "/f" = true from by decide]
+    rw [show Model.isAbsolute "/f" = true from by decide]
     simp only [↓reduceIte]
-    rw [show Internal.normPath "/f" = "/f" from by decide, show vfsSplitSegs "/f" = ["f"] from by decide]
+    rw [show Model.normPath "/f" = "/f" from by decide, show vfsSplitSegs "/f" = ["f"] from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide]; simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show vfsChildPath "/" "f" = "/f" from by decide]
@@ -768,7 +768,7 @@ theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
     unfold vfsCreateFileNewPure
     rw [hTRaw]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, hTAbs, hTSplit, hResTNf]
-    rw [show Internal.splitLastAux [tgtName] [] = some ([], tgtName) from rfl]
+    rw [show Model.splitLastAux [tgtName] [] = some ([], tgtName) from rfl]
     dsimp only; rw [hParOk]
     simp only [hW, hX, Bool.or_self, Bool.false_eq_true, ↓reduceIte, hTChild]; rfl
   have hNodes₁ : s₁.nodes = fun k => if k == ("/" ++ tgtName) then some (.file bytes 0o644) else s₀.nodes k := by
@@ -886,7 +886,7 @@ theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
     have hc := (vfsChildPath_valid "/" tgtName (by decide) hTValid).1
     rw [hTChild] at hc
     unfold isCanonPath at hc
-    simp only [Bool.and_eq_true, beq_iff_eq] at hc
+    simp only [Bool.and_eq_true, beq_iff_eq, model_normPath_eq_internal] at hc
     exact hc.2
   have hReadSym : vfsReadBytesPure s₂ ("/" ++ symName) = .ok bytes := by
     unfold vfsReadBytesPure
@@ -894,8 +894,9 @@ theorem proof_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte, hSAbs₂, hSSplit₂]
     unfold vfsResolveSegs; rw [hRootNode₂]
     simp only [hX, Bool.false_eq_true, ↓reduceIte, hSChild]
-    unfold vfsResolveSegs; rw [hSymNode₂]
-    simp only [↓reduceIte, hTgtIsAbs, hTgtNorm, hTSplit]
+    unfold vfsResolveSegs; rw [hSymNode₂]; dsimp only
+    rw [show Model.isAbsolute ("/" ++ tgtName) = Internal.isAbsolute ("/" ++ tgtName) from rfl, hTgtIsAbs]
+    simp only [↓reduceIte, model_normPath_eq_internal, hTgtNorm, hTSplit]
     unfold vfsResolveSegs; rw [hRootNode₂]
     simp only [hX, Bool.false_eq_true, ↓reduceIte, hTChild]
     unfold vfsResolveSegs; rw [hTgtNode₂]
@@ -943,7 +944,7 @@ theorem reach_fsraw_readBytes_roundTripsExactBytesThroughSymlink :
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide]; simp only [Bool.false_eq_true, ↓reduceIte]
     rw [show vfsChildPath "/" "t" = "/t" from by decide]
     unfold vfsResolveSegs; rw [show st.nodes "/t" = none from rfl]
-    rw [show Internal.splitLastAux ["t"] [] = some ([], "t") from by decide]
+    rw [show Model.splitLastAux ["t"] [] = some ([], "t") from by decide]
     rfl
   let st₁ := (vfsOps.createFileNew "/t" (ByteArray.mk #[7, 8]) st).2
   have hSym : ((vfsOps.symlink "/t" "/s").run st₁).1 = .ok () := by
@@ -1188,6 +1189,7 @@ private theorem normPath_slash_child (child : String) (h : Internal.validFileNam
   have ⟨hCanon, _⟩ := vfsChildPath_valid "/" child (by decide) h
   have hChild : vfsChildPath "/" child = "/" ++ child := by simp [vfsChildPath]
   rw [hChild] at hCanon
+  rw [← model_normPath_eq_internal]
   exact beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp hCanon).2
 
 private theorem vfsAbsNorm_root_dot_child (s : String) (h : Internal.validFileName s = true) :
@@ -1227,7 +1229,11 @@ private theorem vfsAbsNorm_root_dot_child (s : String) (h : Internal.validFileNa
     rw [List.reverse_cons, List.reverse_nil, List.nil_append, Internal.joinSlashChars]
     apply String.ext_iff.mpr
     simp [String.toList_append, show "/".toList = ['/'] by decide]
-  simp [vfsAbsNorm, hNotAbs, hJoin, hNorm]
+  unfold vfsAbsNorm
+  rw [show Model.isAbsolute ("./" ++ s) = Internal.isAbsolute ("./" ++ s) from rfl, hNotAbs]
+  simp only [Bool.false_eq_true, ↓reduceIte,
+    show Model.join "/" ("./" ++ s) = Internal.join "/" ("./" ++ s) from rfl, hJoin,
+    model_normPath_eq_internal, hNorm]
 
 private theorem vfsAbsNorm_root_bare_child (s : String) (h : Internal.validFileName s = true) :
     vfsAbsNorm "/" s = "/" ++ s := by
@@ -1240,7 +1246,11 @@ private theorem vfsAbsNorm_root_bare_child (s : String) (h : Internal.validFileN
       have hc : c ≠ '/' := fun he => hL.2.2.1 (by rw [hC, he]; simp)
       simp [Internal.isAbsolute, Internal.isAbsChars, hC, hc]
   have hJoin : Internal.join "/" s = "/" ++ s := join_slash_of_not_abs s hNotAbs
-  simp [vfsAbsNorm, hNotAbs, hJoin, normPath_slash_child s h]
+  unfold vfsAbsNorm
+  rw [show Model.isAbsolute s = Internal.isAbsolute s from rfl, hNotAbs]
+  simp only [Bool.false_eq_true, ↓reduceIte,
+    show Model.join "/" s = Internal.join "/" s from rfl, hJoin,
+    model_normPath_eq_internal, normPath_slash_child s h]
 
 private theorem isValidRawPath_of_singleValid (s : String)
     (h : (!s.toList.isEmpty && !('/' ∈ s.toList) && !(Char.ofNat 0 ∈ s.toList) && s != "." && s != "..") = true) :
@@ -1591,7 +1601,7 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
         hAbsTmp, (vfsChildPath_valid parCanon tmpName hParCanon.1 hTmpValid).2, hParCanon.2, hTmpStatNf]
     dsimp only
     rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
-    simp only [Bool.false_eq_true, ↓reduceIte, splitLastAux_append_singleton_str]
+    simp only [Bool.false_eq_true, ↓reduceIte, model_splitLastAux_eq_internal, splitLastAux_append_singleton_str]
     rw [hPar1024]
     dsimp only
     rw [hPerm]
@@ -1737,7 +1747,7 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
         (vfsChildPath_valid parCanon lastSeg hParCanon.1 hLastValid).2,
         hSrcAfterCreate]
     dsimp only
-    rw [splitLastAux_append_singleton_str, hParCanon.2]
+    rw [model_splitLastAux_eq_internal, splitLastAux_append_singleton_str, hParCanon.2]
     dsimp only
     rw [hResolveParS1]
     dsimp only
@@ -1766,8 +1776,8 @@ private theorem atomicWriteBytes_vfs_step (s₀ : VfsState) (path : String) (byt
 
 private theorem vfsAbsNorm_canon (cwd path : String) (h : isCanonPath path = true) :
     vfsAbsNorm cwd path = path := by
-  have hAbs : Internal.isAbsolute path = true := (Bool.and_eq_true _ _ |>.mp h).1
-  have hNorm : Internal.normPath path = path := beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp h).2
+  have hAbs : Model.isAbsolute path = true := (Bool.and_eq_true _ _ |>.mp h).1
+  have hNorm : Model.normPath path = path := beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp h).2
   simp [vfsAbsNorm, hAbs, hNorm]
 
 private theorem isValidAtomicTargetPath_pfx_slash_single (pfx s : String)
@@ -1907,9 +1917,9 @@ private theorem vfsChildPath_dir_child (dir child : String)
     simp [vfsChildPath, hNe, String.append_assoc]
   have h2C := vfsChildPath_valid ("/" ++ dir) child h1C.1 h2
   rw [hChild, h1C.2] at h2C
-  have hNorm : Internal.normPath ("/" ++ dir ++ "/" ++ child) = "/" ++ dir ++ "/" ++ child :=
+  have hNorm : Model.normPath ("/" ++ dir ++ "/" ++ child) = "/" ++ dir ++ "/" ++ child :=
     beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp h2C.1).2
-  have hAbs : Internal.isAbsolute ("/" ++ dir ++ "/" ++ child) = true :=
+  have hAbs : Model.isAbsolute ("/" ++ dir ++ "/" ++ child) = true :=
     (Bool.and_eq_true _ _ |>.mp h2C.1).1
   refine ⟨hChild, h2C.1, h2C.2, fun cwd => ?_⟩
   simp [vfsAbsNorm, hAbs, hNorm]
@@ -2515,7 +2525,7 @@ theorem proof_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPreservesTarget :
     dsimp only
     rw [show (FsErrorKind.notFound != FsErrorKind.notFound) = false from by decide]
     simp only [Bool.false_eq_true, ↓reduceIte]
-    rw [show Internal.splitLastAux [tmpName] [] = some ([], tmpName) from rfl]
+    rw [show Model.splitLastAux [tmpName] [] = some ([], tmpName) from rfl]
     dsimp only
     rw [show ((stR.mode / 128) % 2 == 0 || (stR.mode / 64) % 2 == 0) = false from by simp [hRw, hRx]]
     simp only [Bool.false_eq_true, ↓reduceIte, tr1, sAfterCreate, sNonce]
@@ -3623,9 +3633,9 @@ private theorem roundTripsExactBytesThroughSymlink_exec (s₀ : VfsState)
     unfold vfsResolveSegs; rw [hRoot₂]; dsimp only; rw [hRexec, hCS]; simp only [Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs; rw [hSym₂]
     dsimp only
-    rw [show Internal.isAbsolute ("/" ++ tgtName) = true from (Bool.and_eq_true _ _ |>.mp hCanonTgt).1]
+    rw [show Model.isAbsolute ("/" ++ tgtName) = true from (Bool.and_eq_true _ _ |>.mp hCanonTgt).1]
     simp only [↓reduceIte]
-    rw [show Internal.normPath ("/" ++ tgtName) = "/" ++ tgtName from beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp hCanonTgt).2, hSplitTgt]
+    rw [show Model.normPath ("/" ++ tgtName) = "/" ++ tgtName from beq_iff_eq.mp (Bool.and_eq_true _ _ |>.mp hCanonTgt).2, hSplitTgt]
     unfold vfsResolveSegs; rw [hRoot₂]; dsimp only; rw [hRexec, hCTgt]; simp only [Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs; rw [hTgt₂]
   exact ⟨s₁, s₂, hStep1, hSymStep, Prod.ext hRead₂ rfl⟩
@@ -3784,7 +3794,7 @@ example : ¬ AllPass (test_fs_vfs_atomicWriteBytes_renameErrorCleansUpTmpAndPres
     simp only [Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs
     rw [show sNonce.nodes "/.f.tmp.0" = none from rfl]
-    rw [show Internal.splitLastAux [".f.tmp.0"] [] = some ([], ".f.tmp.0") from by decide]
+    rw [show Model.splitLastAux [".f.tmp.0"] [] = some ([], ".f.tmp.0") from by decide]
     unfold vfsResolveSegs
     rw [show sNonce.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
     rw [show (((0o755 / 128) % 2 == 0) || ((0o755 / 64) % 2 == 0)) = false from by decide,
@@ -3845,9 +3855,9 @@ example : ¬ AllPass (test_fs_vfs_readBytes_followsSymlinkToRegularFile
     simp only [Bool.false_eq_true, ↓reduceIte]
     unfold vfsResolveSegs
     rw [show st.nodes "/s" = some (.symlink "/t" 0o777) from rfl]; dsimp only
-    rw [show Internal.isAbsolute "/t" = true from by decide]
+    rw [show Model.isAbsolute "/t" = true from by decide]
     simp only [↓reduceIte]
-    rw [show Internal.normPath "/t" = "/t" from by decide, show vfsSplitSegs "/t" = ["t"] from by decide]
+    rw [show Model.normPath "/t" = "/t" from by decide, show vfsSplitSegs "/t" = ["t"] from by decide]
     unfold vfsResolveSegs
     rw [show st.nodes "/" = some (.dir 0o755) from rfl]; dsimp only
     rw [show ((0o755 / 64) % 2 == 0) = false from by decide, show vfsChildPath "/" "t" = "/t" from by decide]

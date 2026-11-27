@@ -118,7 +118,8 @@ def hasSubstrChars (needle : List Char) : List Char → Bool
 def endsWithChars (suf cs : List Char) : Bool :=
   startsWithChars suf.reverse cs.reverse
 
-private def splitSlashLoop (cur : List Char) (revSegs : List (List Char)) : List Char → List (List Char)
+/-- Tail-recursive worker splitting `cs` on `'/'` separators. -/
+def splitSlashLoop (cur : List Char) (revSegs : List (List Char)) : List Char → List (List Char)
   | [] => (cur.reverse :: revSegs).reverse
   | c :: cs =>
     if c == '/' then splitSlashLoop [] (cur.reverse :: revSegs) cs

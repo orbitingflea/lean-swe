@@ -33,7 +33,7 @@ theorem subtree_mkdir_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd → 
         · exact Or.inr ⟨hEx, rawSt, List.mem_append_right _ hm, hd⟩)
     (fun _ _ _ _ h => h) (·.mkdir rel parents existOk)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         have hFs := dirOps_fstatDir_trace hCap dh [hidOf dh] hW0

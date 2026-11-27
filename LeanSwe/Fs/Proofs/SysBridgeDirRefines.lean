@@ -34,7 +34,7 @@ theorem subtree_withFileLock_step {W fd : Type} {proj : W → FsWorld} {hidOf : 
         Or.inr ⟨hEq, pre, leaf, d, sub, hSp, subtrace_append_right tr1 hSub, hFl⟩)
     (·.withFileLock rel mode createIfMissing (pure actRes))
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]
@@ -165,7 +165,7 @@ theorem subtree_tryWithFileLock_step {W fd : Type} {proj : W → FsWorld} {hidOf
         Or.inr ⟨hEq, pre, leaf, d, sub, hSp, subtrace_append_right tr1 hSub, hFl⟩)
     (·.tryWithFileLock rel mode createIfMissing (pure actRes))
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]

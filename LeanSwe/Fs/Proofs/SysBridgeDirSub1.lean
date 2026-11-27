@@ -5,6 +5,16 @@ namespace LeanSwe.Fs.Proofs
 
 open LeanSwe.LinuxSyscall LeanSwe.LinuxSyscall.Files LeanSwe.Fs LeanSwe.Fs.Model
 
+/-- Equivalence between `Internal.splitLastAux` and `Model.splitLastAux`. -/
+theorem internal_splitLastAux_eq_model {α : Type} (xs acc : List α) :
+    Internal.splitLastAux xs acc = splitLastAux xs acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => exact ih (x :: acc)
+
 /-- Named `Except` outcome matcher so congruence substitution unifies cleanly across `match` helpers. -/
 def exceptPred {α : Type} (r : Except FsError α) (okP : α → Prop) (errP : FsError → Prop) : Prop :=
   match r with | .ok a => okP a | .error e => errP e
@@ -220,7 +230,7 @@ theorem subtree_lstat_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd → 
       | some pair => rw [hSp] at h; obtain ⟨d, rawSt, hm, heq⟩ := h; exact ⟨d, rawSt, List.mem_append_right _ hm, heq⟩)
     (fun _ _ _ _ h => h) (·.lstat rel)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         have hFs := dirOps_fstatDir_trace hCap dh [hidOf dh] hW0
@@ -281,7 +291,7 @@ theorem subtree_readRegular_step {W fd : Type} {proj : W → FsWorld} {hidOf : f
       ⟨pre, leaf, d, sub, hSp, subtrace_append_right tr1 hSub, hR⟩)
     (fun _ _ _ _ h => h) (·.readRegular rel)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         have hFs := dirOps_fstatDir_trace hCap dh [hidOf dh] hW0
@@ -351,7 +361,7 @@ theorem subtree_atomicWriteBytes_step {W fd : Type} {proj : W → FsWorld} {hidO
       ⟨pre, leaf, d, tmp, sub1, sub2, hSp, subtrace_append_right tr1 hSub, hWr, hRn⟩)
     (fun _ _ _ _ h => h) (·.atomicWriteBytes rel data)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]

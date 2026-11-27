@@ -1,8 +1,7 @@
 import LeanSwe.EnvVars.Types
 import LeanSwe.Process.Types
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
-import LeanSwe.Git.Model.Refines
+import LeanSwe.Git.Types.Internal
 import LeanSwe.Git.Impl.Helpers
 import LeanSwe.Git.Impl.QueryOps
 import LeanSwe.Git.Impl.MutOps
@@ -12,7 +11,7 @@ namespace LeanSwe.Git.Impl
 open LeanSwe.EnvVars
 open LeanSwe.Process
 open LeanSwe.Git
-open LeanSwe.Git.Model
+open LeanSwe.Git.Internal (GitHostCapsM)
 
 /-- Map an `EnvVarsError` produced by `EnvVarsApiM.listEnv` to a normalized `GitError`. -/
 abbrev mapEnvVarsErrorImpl (e : EnvVarsError) : GitError :=

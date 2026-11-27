@@ -51,6 +51,7 @@ theorem openDirPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd → H
         nonLockErrOk e ∧
         ((trOpen = [] ∧ isValidRawPath rootPath = false ∧ e.kind = .invalidInput) ∨ trOpen ≠ []) := by
   unfold SysBridge.openDirPure
+  rw [show SysBridge.isValidRawPath rootPath = isValidRawPath rootPath from rfl]
   by_cases hVal : isValidRawPath rootPath = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (files.openat none rootPath.toUTF8 dirOpenFlags 0)

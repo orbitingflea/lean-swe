@@ -171,7 +171,7 @@ theorem vfsAbsNorm_pathOfSegs (cwd : String) (segs : List String) (hValid : ∀ 
     have hP0 : pathOfSegs [] = "/" := rfl
     rw [hP0]
     unfold vfsAbsNorm
-    simp only [show Internal.isAbsolute "/" = true from rfl, ↓reduceIte]
+    simp only [show Model.isAbsolute "/" = true from rfl, ↓reduceIte]
     rfl
   | cons s rest =>
     have hEq := pathOfSegs_eq_ofList_joinSlashChars (s :: rest)
@@ -179,7 +179,8 @@ theorem vfsAbsNorm_pathOfSegs (cwd : String) (segs : List String) (hValid : ∀ 
       rw [hEq]
       simp [Internal.isAbsolute, Internal.isAbsChars]
     unfold vfsAbsNorm
-    simp only [hAbs, ↓reduceIte]
+    rw [show Model.isAbsolute (pathOfSegs (s :: rest)) = Internal.isAbsolute (pathOfSegs (s :: rest)) from rfl, hAbs]
+    simp only [↓reduceIte, model_normPath_eq_internal]
     unfold Internal.normPath
     have hToList : (pathOfSegs (s :: rest)).toList = '/' :: Internal.joinSlashChars ((s :: rest).map String.toList) := by
       rw [hEq]; simp
@@ -349,8 +350,8 @@ private theorem vfsResolveSegs_succ (nodes : String → Option VfsNode) (cur : S
         | none => .error { kind := .notFound, path := some cur, message := s!"no such file or directory: {cur}" }
         | some (.symlink target m) =>
           if follow then
-            let par := (Internal.parent cur).getD "/"
-            let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
+            let par := (Model.parent cur).getD "/"
+            let nextAbs := Model.normPath (if Model.isAbsolute target then target else Model.join par target)
             vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs) true fuel
           else .ok (cur, .symlink target m)
         | some node => .ok (cur, node)
@@ -363,8 +364,8 @@ private theorem vfsResolveSegs_succ (nodes : String → Option VfsNode) (cur : S
           else
             vfsResolveSegs nodes (vfsChildPath cur seg) rest follow fuel
         | some (.symlink target _) =>
-          let par := (Internal.parent cur).getD "/"
-          let nextAbs := Internal.normPath (if Internal.isAbsolute target then target else Internal.join par target)
+          let par := (Model.parent cur).getD "/"
+          let nextAbs := Model.normPath (if Model.isAbsolute target then target else Model.join par target)
           vfsResolveSegs nodes "/" (vfsSplitSegs nextAbs ++ seg :: rest) follow fuel
         | some (.file _ _) =>
           .error { kind := .notADirectory, path := some cur, message := s!"not a directory: {cur}" } :=

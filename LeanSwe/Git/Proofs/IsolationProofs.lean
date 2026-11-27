@@ -250,9 +250,12 @@ theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
   intro repoPath wtPath actOk cleanOk ⟨hRepoFs, hWtFs⟩
   have hRepo : isValidPathArg repoPath = true := isValidPathArg_of_validateFsPathArg hRepoFs
   have hWt : isValidPathArg wtPath = true := isValidPathArg_of_validateFsPathArg hWtFs
-  have hRepo' : Impl.validateRepoPath repoPath = .ok () := hRepoFs
-  have hWt' : Impl.validateRepoPath wtPath = .ok () := hWtFs
-  have hCwdRepo : Impl.validateCwd? (some repoPath) = .ok () := by simp [Impl.validateCwd?, hRepo]
+  have hRepo' : Impl.validateRepoPath repoPath = .ok () := by
+    unfold Impl.validateRepoPath; rw [validateFsPathArgImpl_eq]; exact hRepoFs
+  have hWt' : Impl.validateRepoPath wtPath = .ok () := by
+    unfold Impl.validateRepoPath; rw [validateFsPathArgImpl_eq]; exact hWtFs
+  have hCwdRepo : Impl.validateCwd? (some repoPath) = .ok () := by
+    simp [Impl.validateCwd?, isValidPathArgImpl_eq, hRepo]
   have hExtra : Impl.validateExtraEnv #[] = .ok () := by unfold Impl.validateExtraEnv; simp
   have hNulWt : hasNulChar wtPath.toList = false := by
     simp [isValidPathArg] at hWt
@@ -291,7 +294,7 @@ theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
     change Impl.runGitRaw mockRawOps addReq = _
     unfold Impl.runGitRaw
     rw [hCwdRepo, hExtra]
-    simp only [addReq, addArgs, hArgsAdd, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [addReq, addArgs, hasNulCharImpl_eq, cleanGitEnvImpl_eq, hArgsAdd, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     rfl
   have hRemRaw :
       Impl.runGitRaw mockRawOps { cwd := some repoPath, args := #["worktree", "remove", "--", wtPath] } =
@@ -304,7 +307,7 @@ theorem proof_git_api_withWorktree_cleanupAndErrorPrecedence :
     change Impl.runGitRaw mockRawOps remReq = _
     unfold Impl.runGitRaw
     rw [hCwdRepo, hExtra]
-    simp only [remReq, remArgs, hArgsRem, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    simp only [remReq, remArgs, hasNulCharImpl_eq, cleanGitEnvImpl_eq, hArgsRem, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     rfl
   let handlerFn : GitRawRequest → Nat → Except GitError GitRawOutput := fun req _ =>
     if req.args[1]? == some "add" then
@@ -442,7 +445,7 @@ theorem proof_git_raw_mkApi_isolationAndGuards :
   have hRepoOk : Impl.validateRepoPath "/repo" = .ok () := by cbv
   have hCwdOk : Impl.validateCwd? (some "/repo") = .ok () := by
     unfold Impl.validateCwd?
-    simp [show isValidPathArg "/repo" = true from by decide]
+    simp [isValidPathArgImpl_eq, show isValidPathArg "/repo" = true from by decide]
   have hExtraOk : Impl.validateExtraEnv #[] = .ok () := by
     unfold Impl.validateExtraEnv; simp
   have hEnvCheck :
@@ -470,7 +473,7 @@ theorem proof_git_raw_mkApi_isolationAndGuards :
       all_no_nul_of_list ["commit", "--no-gpg-sign", "-m", "msg"] (by decide)
     have hCont : (commitArgs.toList.contains "commit") = true := by decide
     unfold Impl.commitImpl Impl.runGitChecked Impl.runGitRaw
-    simp only [hRepoOk, hOpts, Bool.false_eq_true, ↓reduceIte, Array.append_empty, hExtraApp,
+    simp only [hRepoOk, validateCommitOptionsImpl_eq, hasNulCharImpl_eq, cleanGitEnvImpl_eq, hOpts, Bool.false_eq_true, ↓reduceIte, Array.append_empty, hExtraApp,
       hCwdOk, hExtraOk, bind, StateT.bind, pure, mockRawOps, st₀]
     rw [show (#["commit", "--no-gpg-sign", "-m", "msg"].all fun a => !hasNulChar a.toList) = true from hArgs]
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
@@ -535,8 +538,9 @@ theorem proof_git_raw_mkApi_isolationAndGuards :
            callCount := 2 }) := by
       unfold Impl.showFileImpl Impl.revParseCommitImpl
         Impl.runGitChecked Impl.runGitRaw
-      simp only [hRepoOk, hStrictValid, hRevValid, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-        hRel, hCwdOk, hExtraOk, bind, StateT.bind, pure, mockRawOps, st₀]
+      simp only [hRepoOk, isValidStrictRevSpecImpl_eq, isValidRevSpecImpl_eq, validateRelRepoPathImpl_eq,
+        hasNulCharImpl_eq, cleanGitEnvImpl_eq, mkCommitIdImpl_eq, hStrictValid, hRevValid, Bool.not_true,
+        Bool.false_eq_true, ↓reduceIte, hRel, hCwdOk, hExtraOk, bind, StateT.bind, pure, mockRawOps, st₀]
       rw [hRevStr, hArgs1]
       simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
       dsimp only [bind, StateT.bind, pure, StateT.pure]
@@ -565,7 +569,7 @@ theorem proof_git_raw_mkApi_isolationAndGuards :
       e.kind = .invalidInput ∧
       (Impl.fetchImpl mockRawOps "/repo" "--upload-pack=evil" none false st₀).2.callCount = 0
     unfold Impl.fetchImpl
-    rw [hRepoOk, show isValidRemoteOrRefspec "--upload-pack=evil" = false from by decide]
+    rw [hRepoOk, isValidRemoteOrRefspecImpl_eq, show isValidRemoteOrRefspec "--upload-pack=evil" = false from by decide]
     exact ⟨_, rfl, rfl, rfl⟩
   have hAdd : ∃ e, (((Impl.mkApiM mockRawOps).add "/repo" #[] false).run st₀).1 = .error e ∧
       e.kind = .invalidInput ∧
@@ -583,7 +587,7 @@ theorem proof_git_raw_mkApi_isolationAndGuards :
       e.kind = .invalidInput ∧
       (Impl.showFileImpl mockRawOps "/repo" "HEAD:etc/passwd" "a" st₀).2.callCount = 0
     unfold Impl.showFileImpl
-    rw [hRepoOk, show isValidStrictRevSpec "HEAD:etc/passwd" = false from by cbv]
+    rw [hRepoOk, isValidStrictRevSpecImpl_eq, show isValidStrictRevSpec "HEAD:etc/passwd" = false from by cbv]
     exact ⟨_, rfl, rfl, rfl⟩
   exact ⟨hCommit, hCommitEnv, hShowRun, hFetch, hAdd, hColon, trivial⟩
 

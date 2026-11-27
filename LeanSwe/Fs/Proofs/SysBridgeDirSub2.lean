@@ -29,7 +29,7 @@ theorem subtree_unlink_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd →
       · exact Or.inr ⟨hM, r, List.mem_append_right tr1 hm⟩)
     (fun _ _ _ _ h => h) (·.unlink rel missingOk)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]
@@ -97,7 +97,7 @@ theorem subtree_rmdir_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd → 
     (fun _ _ tr1 tr2 ⟨pre, leaf, d, hSp, hU⟩ => ⟨pre, leaf, d, hSp, List.mem_append_right _ hU⟩)
     (fun _ _ _ _ h => h) (·.rmdir rel)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]
@@ -159,7 +159,7 @@ theorem subtree_rmtree_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd →
       · exact Or.inr ⟨hM, r, List.mem_append_right tr1 hm⟩)
     (fun _ _ _ _ h => h) (·.rmtree rel ignoreMissing)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]
@@ -237,7 +237,7 @@ theorem subtree_symlink_step {W fd : Type} {proj : W → FsWorld} {hidOf : fd �
     (fun _ _ tr1 tr2 ⟨pre, leaf, d, hSp, hSy⟩ => ⟨pre, leaf, d, hSp, List.mem_append_right _ hSy⟩)
     (fun _ _ _ _ h => h) (·.symlink target rel)
     (fun dh s0 hW0 => by
-      simp only [Internal.subtreeOpsM]
+      simp only [Internal.subtreeOpsM, internal_splitLastAux_eq_model]
       cases hSp : splitLastAux rel.segments [] with
       | none =>
         simp only [Pure.pure, StateT.pure, StateT.run]

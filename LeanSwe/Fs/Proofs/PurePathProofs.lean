@@ -29,7 +29,7 @@ theorem proof_fs_mapRawError_returnsNonEmptyMessage :
     AllPass (test_fs_mapRawError_returnsNonEmptyMessage defaultApi) := by
   intro raw
   simp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiFromScopedRawRetryM, Internal.mkApiFromScopedRawM,
-    Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM, Model.mapRawError, assert]
+    Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
   refine ⟨?_, trivial⟩
   cases raw with
   | noFileOrDirectory p _ _ =>
@@ -49,7 +49,7 @@ theorem proof_fsraw_mapRawError_wouldBlock :
     AllPass (test_fsraw_mapRawError_wouldBlock defaultApi) := by
   intro path? errno detail
   simp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiFromScopedRawRetryM, Internal.mkApiFromScopedRawM,
-    Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM, Model.mapRawError, assert]
+    Internal.toScopedRawFsOpsM, SysBridge.mkRawFsOpsM, SysBridge.mapRawError, assert]
   refine ⟨⟨trivial, trivial, trivial, nonEmptyMsg_ne_empty _ _ (by decide)⟩, trivial⟩
 
 /-- Non-vacuity `CanReach` witness for `test_fsraw_mapRawError_wouldBlock`. -/

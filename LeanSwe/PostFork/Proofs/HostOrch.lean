@@ -58,14 +58,14 @@ private theorem spawn_invalid (spec : ChildSpecM Int32) (h : (!validateSpec spec
     ((Impl.Internal.mkHostOps mockPosixHostOps).spawn spec).run {} =
       (.error (Impl.Internal.mkInvalidErr "invalid ChildSpecM"), {}) := by
   dsimp only [Impl.Internal.mkHostOps]
-  simp only [h, ↓reduceIte]
+  simp only [validateSpecImpl_eq, h, ↓reduceIte]
   rfl
 
 private theorem spawnWithBarrier_invalid (spec : ChildSpecM Int32) (h : (!validateSpec spec) = true) :
     ((Impl.Internal.mkHostOps mockPosixHostOps).spawnWithBarrier spec).run {} =
       (.error (Impl.Internal.mkInvalidErr "invalid ChildSpecM"), {}) := by
   dsimp only [Impl.Internal.mkHostOps]
-  simp only [h, ↓reduceIte]
+  simp only [validateSpecImpl_eq, h, ↓reduceIte]
   rfl
 
 private theorem spawn_largeArgs (extraArgCount : Nat) (fMode : ForkMode) (waitSt : ChildWaitStatus) :
@@ -85,10 +85,10 @@ private theorem spawn_largeArgs (extraArgCount : Nat) (fMode : ForkMode) (waitSt
     decide
   dsimp only [specLarge] at hVal
   dsimp only [Impl.Internal.mkHostOps]
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeStdioPlan mockPosixHostOps .inherit).run { waitResult := waitSt } = (.ok (), _))]
   dsimp only
-  rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run { waitResult := waitSt } = (.ok (), _))]
+  rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run { waitResult := waitSt } = (.ok (), _))]
   dsimp only
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.filterOpenCloseList mockPosixHostOps (#[] : Array (FdRef Int32)).toList #[]).run { waitResult := waitSt } = (#[], _))]
   let s1 : HostMockState := { waitResult := waitSt, callCount := 1, nextFd := 12, allocRepReadFd := 10 }
@@ -126,7 +126,7 @@ private theorem spawn_largeArgs (extraArgCount : Nat) (fMode : ForkMode) (waitSt
       (.ok (), { s4 with callCount := s4.callCount + 1, closedHandles := 10 :: s4.closedHandles, closedFds := 10 :: s4.closedFds }) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hCloseR]
   have hDec : decodeChildFailure ByteArray.empty = none := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only [bind, StateT.bind, pure, StateT.pure]
   refine ⟨_, rfl, ?_, rfl⟩
   dsimp only [s4, s3, s2, largeArgs]
@@ -183,10 +183,10 @@ private theorem spawn_tokFd (tokFd : Int32) :
     decide
   dsimp only [specTok] at hVal
   dsimp only [Impl.Internal.mkHostOps]
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeStdioPlan mockPosixHostOps .inherit).run {} = (.ok (), {}))]
   dsimp only
-  rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run {} = (.ok (), {}))]
+  rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run {} = (.ok (), {}))]
   dsimp only
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.filterOpenCloseList mockPosixHostOps (#[] : Array (FdRef Int32)).toList #[]).run {} = (#[], {}))]
   let s1 : HostMockState := { callCount := 1, nextFd := 12, allocRepReadFd := 10 }
@@ -221,7 +221,7 @@ private theorem spawn_tokFd (tokFd : Int32) :
       (.ok (), { s4 with callCount := s4.callCount + 1, closedHandles := 10 :: s4.closedHandles, closedFds := 10 :: s4.closedFds }) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hCloseR]
   have hDec : decodeChildFailure ByteArray.empty = none := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only [bind, StateT.bind, pure, StateT.pure]
   refine ⟨_, rfl, rfl, ?_, ?_, rfl, rfl⟩
   · dsimp only [s4, s3, s2, specTok]
@@ -246,7 +246,7 @@ private theorem spawn_closedStdio99 :
     simp only [validateSpec, validateSpecWith, disjointFdRefArrays_empty, hasEmbeddedNulStr_true, FdPolicy.keepFds,
       array_all_empty, array_any_empty]
     decide
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   exact ⟨_, _, rfl, rfl, rfl⟩
 
 private theorem spawnWithBarrier_closedKeep99 :
@@ -266,7 +266,7 @@ private theorem spawnWithBarrier_closedKeep99 :
     simp only [validateSpec, validateSpecWith, disjointFdRefArrays_empty, hasEmbeddedNulStr_true, FdPolicy.keepFds,
       hKeep, array_all_empty]
     decide
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   exact ⟨_, _, rfl, rfl, rfl⟩
 
 private def barMidState (waitSt : ChildWaitStatus) : HostMockState :=
@@ -306,12 +306,12 @@ private theorem spawnWithBarrier_ok (waitSt : ChildWaitStatus) :
     simp only [validateSpec, validateSpecWith, disjointFdRefArrays_empty, hasEmbeddedNulStr_true, FdPolicy.keepFds,
       array_all_empty]
     decide
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   have hP1 : (Impl.Internal.probeStdioPlan mockPosixHostOps .inherit).run stBar = (.ok (), stBar) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hP1]
   dsimp only
   have hP2 : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run stBar = (.ok (), stBar) := rfl
-  rw [stateT_bind_pure_pair _ _ _ _ _ hP2]
+  rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ hP2]
   dsimp only
   have hFC : (Impl.Internal.filterOpenCloseList mockPosixHostOps (#[] : Array (FdRef Int32)).toList #[]).run stBar = (#[], stBar) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hFC]
@@ -381,7 +381,7 @@ private theorem releaseBarrier_ok (waitSt : ChildWaitStatus) :
   have hCl10 : (mockPosixHostOps.closeFd 10).run s3 = (.ok (), s4) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hCl10]
   have hDec : decodeChildFailure ByteArray.empty = none := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only [pure, StateT.pure]
   dsimp only [pend]
   exact ⟨s4, rfl, rfl, rfl, rfl⟩
@@ -426,7 +426,7 @@ private theorem releaseBarrier_epipe (waitSt : ChildWaitStatus) :
   rw [stateT_bind_pure_pair _ _ _ _ _ hCl10]
   have hDec : decodeChildFailure (ByteArray.mk #[0x50, 0x01, 7, 0, 2, 0, 0, 0]) =
       some { stage := .execve, errno := Errno.ENOENT } := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only
   have hWt := waitRetry_ok 4242 s4 rfl (by dsimp only [s4, s3, s2, s1, s0, stEpipe, barMidState]; omega)
   rw [stateT_bind_pure_pair _ _ _ _ _ hWt]
@@ -473,7 +473,7 @@ private theorem releaseBarrier_epipe_empty (waitSt : ChildWaitStatus) :
   have hCl10 : (mockPosixHostOps.closeFd 10).run s3 = (.ok (), s4) := rfl
   rw [stateT_bind_pure_pair _ _ _ _ _ hCl10]
   have hDec : decodeChildFailure ByteArray.empty = none := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   simp only [↓reduceIte]
   have hWt := waitRetry_ok 4242 s4 rfl (by dsimp only [s4, s3, s2, s1, s0, stEpipeEmpty, barMidState]; omega)
   rw [stateT_bind_pure_pair _ _ _ _ _ hWt]
@@ -536,7 +536,7 @@ private theorem abortBarrier_failed (waitSt : ChildWaitStatus) :
   dsimp only [pure, StateT.pure]
   have hDec : decodeChildFailure (ByteArray.mk #[0x50, 0x01, 4, 0, 9, 0, 0, 0]) =
       some { stage := .fdSetup, errno := Errno.EBADF } := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   exact ⟨_, rfl⟩
 
 private theorem spawn_wireFail (stage : FailureStage) (errVal : UInt32)
@@ -562,10 +562,10 @@ private theorem spawn_wireFail (stage : FailureStage) (errVal : UInt32)
       array_all_empty]
     decide
   dsimp only [specF] at hVal
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeStdioPlan mockPosixHostOps .inherit).run st0 = (.ok (), st0))]
   dsimp only
-  rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0))]
+  rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0))]
   dsimp only
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.filterOpenCloseList mockPosixHostOps (#[] : Array (FdRef Int32)).toList #[]).run st0 = (#[], st0))]
   let s1 := { st0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
@@ -609,7 +609,7 @@ private theorem spawn_wireFail (stage : FailureStage) (errVal : UInt32)
   have hDec : decodeChildFailure (ByteArray.mk #[WIRE_MAGIC, WIRE_VERSION, tag, 0, b4, b5, b6, b7]) =
       some { stage := stage, errno := errVal } :=
     decodeChildFailure_encode_roundTrip stage errVal hStage hLo hHi
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only
   have hWt := waitRetry_ok 4242 s5 rfl (by dsimp only [s5, s4, s3, s2, s1, st0]; omega)
   rw [stateT_bind_pure_pair _ _ _ _ _ hWt]
@@ -631,10 +631,10 @@ private theorem spawn_wireTrunc :
       array_all_empty]
     decide
   dsimp only [specF] at hVal
-  simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+  simp only [validateSpecImpl_eq, hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeStdioPlan mockPosixHostOps .inherit).run st0 = (.ok (), st0))]
   dsimp only
-  rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0))]
+  rw [keepFdsImpl_eq, stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.probeRefList mockPosixHostOps (FdPolicy.keepFds .inheritNonCloexec).toList).run st0 = (.ok (), st0))]
   dsimp only
   rw [stateT_bind_pure_pair _ _ _ _ _ (rfl : (Impl.Internal.filterOpenCloseList mockPosixHostOps (#[] : Array (FdRef Int32)).toList #[]).run st0 = (#[], st0))]
   let s1 := { st0 with callCount := 1, nextFd := 12, allocRepReadFd := 10 }
@@ -669,7 +669,7 @@ private theorem spawn_wireTrunc :
   rw [stateT_bind_pure_pair _ _ _ _ _ hCloseR]
   have hDec : decodeChildFailure (ByteArray.mk #[0x50, 0x01, 7, 0]) =
       some { stage := .wireTruncated, errno := Errno.EIO } := rfl
-  rw [hDec]
+  rw [decodeChildFailureImpl_eq, hDec]
   dsimp only
   have hWt := waitRetry_ok 4242 s5 rfl (by dsimp only [s5, s4, s3, s2, s1, st0]; omega)
   rw [stateT_bind_pure_pair _ _ _ _ _ hWt]
@@ -685,7 +685,7 @@ theorem test_postfork_hostOps_validationBarrierEintrAndWire_allPass :
   refine step_do_jp2 (!validateSpec spec) _ _ _ ?_ ?_
   · intro hInv
     dsimp only [Impl.Internal.mkHostOps]
-    simp only [hInv, ↓reduceIte, pure, StateT.pure]
+    simp only [validateSpecImpl_eq, hInv, ↓reduceIte, pure, StateT.pure]
     exact ⟨⟨⟨_, rfl, rfl⟩, trivial⟩, ⟨⟨_, rfl, rfl⟩, trivial⟩⟩
   obtain ⟨stLarge, hLarge, hLargeSz, hLargeFm⟩ := spawn_largeArgs extraArgCount fMode waitSt
   rw [hLarge]
@@ -835,9 +835,9 @@ theorem spawnWithBarrier_never_childFailed (spec : ChildSpec) (w : Void IO.RealW
   dsimp only [Impl.Internal.mkHostOps]
   by_cases hVal : (!validateSpec spec) = true
   · refine ⟨.error (Impl.Internal.mkInvalidErr "invalid ChildSpecM"), w, ?_, fun e he => by cases he; decide⟩
-    simp [hVal, io_pure_eq]
+    simp [validateSpecImpl_eq, hVal, io_pure_eq]
   · have hValF : (!validateSpec spec) = false := Bool.eq_false_iff.mpr hVal
-    simp only [hValF, Bool.false_eq_true, ↓reduceIte]
+    simp only [validateSpecImpl_eq, hValF, Bool.false_eq_true, ↓reduceIte]
     rw [io_bind_eq]
     rcases probeStdioPlan_sysOnly raw hRaw spec.stdio w with ⟨r1, w1, hw1, hs1⟩
     rw [hw1]
@@ -850,7 +850,7 @@ theorem spawnWithBarrier_never_childFailed (spec : ChildSpec) (w : Void IO.RealW
       dsimp only
       rw [io_bind_eq]
       rcases probeRefList_sysOnly raw hRaw (FdPolicy.keepFds spec.fdPolicy).toList w1 with ⟨r2, w2, hw2, hs2⟩
-      rw [hw2]
+      rw [keepFdsImpl_eq, hw2]
       dsimp only
       cases r2 with
       | error err =>

@@ -448,6 +448,7 @@ theorem readBytesPure_trace {W fd : Type} {proj : W → FsWorld} {hidOf : fd →
       | .ok bs => ReadRegularTrace none path.toUTF8 readOpenFlags bs tr
       | .error e => nonLockErrOk e ∧ (tr ≠ [] ∨ (isValidRawPath path = false ∧ e.kind = .invalidInput)) := by
   unfold SysBridge.readBytesPure
+  rw [show SysBridge.isValidRawPath path = isValidRawPath path from rfl]
   by_cases hVal : isValidRawPath path = true
   · simp only [hVal, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     have hOp := retryEintr_single_req (files.openat none path.toUTF8 readOpenFlags 0)

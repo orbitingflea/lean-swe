@@ -7,6 +7,108 @@ namespace LeanSwe.Fs.Proofs
 
 open LeanSwe.Fs
 
+private theorem splitCharList_eq (sep : Char) (cs : List Char) :
+    Internal.splitCharList sep cs = Model.splitCharList sep cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    by_cases h : (c == sep) = true <;> (simp [Internal.splitCharList, Model.splitCharList, h, ih]; try rfl)
+
+private theorem joinSlashChars_eq (segs : List (List Char)) :
+    Internal.joinSlashChars segs = Model.joinSlashChars segs := by
+  induction segs with
+  | nil => rfl
+  | cons s rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => simp only [Internal.joinSlashChars, Model.joinSlashChars, ih]
+
+private theorem collapseChars_eq (abs : Bool) (segs acc : List (List Char)) :
+    Internal.collapseChars abs segs acc = Model.collapseChars abs segs acc := by
+  induction segs generalizing acc with
+  | nil => rfl
+  | cons seg rest ih =>
+    unfold Internal.collapseChars Model.collapseChars
+    split
+    · exact ih acc
+    · split
+      · cases acc with
+        | nil => exact ih _
+        | cons top tail =>
+          dsimp only
+          split
+          · exact ih tail
+          · exact ih _
+      · exact ih (seg :: acc)
+
+private theorem cleanCharSegments_eq (path : String) :
+    Internal.cleanCharSegments path = Model.cleanCharSegments path := by
+  unfold Internal.cleanCharSegments Model.cleanCharSegments
+  dsimp only
+  rw [splitCharList_eq]
+  rfl
+
+private theorem splitLastAux_eq {α : Type} (xs acc : List α) :
+    Internal.splitLastAux xs acc = Model.splitLastAux xs acc := by
+  induction xs generalizing acc with
+  | nil => rfl
+  | cons x rest ih =>
+    cases rest with
+    | nil => rfl
+    | cons _ _ => exact ih (x :: acc)
+
+private theorem splitParentName_eq (path : String) :
+    Internal.splitParentName path = Model.splitParentName path := by
+  unfold Internal.splitParentName Model.splitParentName
+  simp only [cleanCharSegments_eq, splitLastAux_eq, joinSlashChars_eq]
+  rfl
+
+private theorem splitRevAtDot_eq (cs : List Char) :
+    Internal.splitRevAtDot cs = Model.splitRevAtDot cs := by
+  induction cs with
+  | nil => rfl
+  | cons c rest ih =>
+    by_cases h : c = '.'
+    · subst h; rfl
+    · have h1 : Internal.splitRevAtDot (c :: rest) =
+          match Internal.splitRevAtDot rest with
+          | none => none
+          | some (pref, suf) => some (pref, c :: suf) := by
+        conv => lhs; rw [Internal.splitRevAtDot.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      have h2 : Model.splitRevAtDot (c :: rest) =
+          match Model.splitRevAtDot rest with
+          | none => none
+          | some (pref, suf) => some (pref, c :: suf) := by
+        conv => lhs; rw [Model.splitRevAtDot.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      rw [h1, h2, ih]
+
+private theorem splitNameSuffix_eq (fileName : String) :
+    Internal.splitNameSuffix fileName = Model.splitNameSuffix fileName := by
+  unfold Internal.splitNameSuffix Model.splitNameSuffix
+  rw [splitRevAtDot_eq]
+  rfl
+
+private theorem stripPrefixParts_eq (bs ps : List (List Char)) :
+    Internal.stripPrefixParts bs ps = Model.stripPrefixParts bs ps := by
+  induction bs generalizing ps with
+  | nil => rfl
+  | cons b brest ih =>
+    cases ps with
+    | nil => rfl
+    | cons p prest =>
+      unfold Internal.stripPrefixParts Model.stripPrefixParts
+      split
+      · exact ih prest
+      · rfl
+
 /-- Pure refinement for `Fs.join`. -/
 theorem refinesPure_join : Core.ObeysPureEq2 LeanSwe.Fs.join LeanSwe.Fs.Model.join :=
   fun _ _ => rfl
@@ -16,44 +118,76 @@ theorem refinesPure_joinMany : Core.ObeysPureEq LeanSwe.Fs.joinMany LeanSwe.Fs.M
   fun _ => rfl
 
 /-- Pure refinement for `Fs.normPath`. -/
-theorem refinesPure_normPath : Core.ObeysPureEq LeanSwe.Fs.normPath LeanSwe.Fs.Model.normPath :=
-  fun _ => rfl
+theorem refinesPure_normPath : Core.ObeysPureEq LeanSwe.Fs.normPath LeanSwe.Fs.Model.normPath := fun p => by
+  change Internal.normPath p = Model.normPath p
+  unfold Internal.normPath Model.normPath
+  simp only [splitCharList_eq, collapseChars_eq, joinSlashChars_eq]
+  rfl
 
 /-- Pure refinement for `Fs.parent`. -/
-theorem refinesPure_parent : Core.ObeysPureEq LeanSwe.Fs.parent LeanSwe.Fs.Model.parent :=
-  fun _ => rfl
+theorem refinesPure_parent : Core.ObeysPureEq LeanSwe.Fs.parent LeanSwe.Fs.Model.parent := fun p => by
+  change Internal.parent p = Model.parent p
+  unfold Internal.parent Model.parent
+  rw [splitParentName_eq]
+  rfl
 
 /-- Pure refinement for `Fs.name`. -/
-theorem refinesPure_name : Core.ObeysPureEq LeanSwe.Fs.name LeanSwe.Fs.Model.name :=
-  fun _ => rfl
+theorem refinesPure_name : Core.ObeysPureEq LeanSwe.Fs.name LeanSwe.Fs.Model.name := fun p => by
+  change Internal.name p = Model.name p
+  unfold Internal.name Model.name
+  rw [splitParentName_eq]
+  rfl
 
 /-- Pure refinement for `Fs.stem`. -/
-theorem refinesPure_stem : Core.ObeysPureEq LeanSwe.Fs.stem LeanSwe.Fs.Model.stem :=
-  fun _ => rfl
+theorem refinesPure_stem : Core.ObeysPureEq LeanSwe.Fs.stem LeanSwe.Fs.Model.stem := fun p => by
+  change Internal.stem p = Model.stem p
+  unfold Internal.stem Model.stem
+  have hn : Internal.name p = Model.name p := refinesPure_name p
+  simp only [hn, splitNameSuffix_eq]
 
 /-- Pure refinement for `Fs.suffix`. -/
-theorem refinesPure_suffix : Core.ObeysPureEq LeanSwe.Fs.suffix LeanSwe.Fs.Model.suffix :=
-  fun _ => rfl
+theorem refinesPure_suffix : Core.ObeysPureEq LeanSwe.Fs.suffix LeanSwe.Fs.Model.suffix := fun p => by
+  change Internal.suffix p = Model.suffix p
+  unfold Internal.suffix Model.suffix
+  have hn : Internal.name p = Model.name p := refinesPure_name p
+  simp only [hn, splitNameSuffix_eq]
+  rfl
 
 /-- Pure refinement for `Fs.suffixes`. -/
-theorem refinesPure_suffixes : Core.ObeysPureEq LeanSwe.Fs.suffixes LeanSwe.Fs.Model.suffixes :=
-  fun _ => rfl
+theorem refinesPure_suffixes : Core.ObeysPureEq LeanSwe.Fs.suffixes LeanSwe.Fs.Model.suffixes := fun p => by
+  change Internal.suffixes p = Model.suffixes p
+  unfold Internal.suffixes Model.suffixes
+  have hn : Internal.name p = Model.name p := refinesPure_name p
+  simp only [hn, splitCharList_eq]
+  rfl
 
 /-- Pure refinement for `Fs.withName`. -/
-theorem refinesPure_withName : Core.ObeysPureEq2 LeanSwe.Fs.withName LeanSwe.Fs.Model.withName :=
-  fun _ _ => rfl
+theorem refinesPure_withName : Core.ObeysPureEq2 LeanSwe.Fs.withName LeanSwe.Fs.Model.withName := fun p n => by
+  change Internal.withName p n = Model.withName p n
+  unfold Internal.withName Model.withName
+  simp only [splitParentName_eq]
+  rfl
 
 /-- Pure refinement for `Fs.withSuffix`. -/
-theorem refinesPure_withSuffix : Core.ObeysPureEq2 LeanSwe.Fs.withSuffix LeanSwe.Fs.Model.withSuffix :=
-  fun _ _ => rfl
+theorem refinesPure_withSuffix : Core.ObeysPureEq2 LeanSwe.Fs.withSuffix LeanSwe.Fs.Model.withSuffix := fun p s => by
+  change Internal.withSuffix p s = Model.withSuffix p s
+  unfold Internal.withSuffix Model.withSuffix
+  have hwn : ∀ n, Internal.withName p n = Model.withName p n := refinesPure_withName p
+  simp only [splitParentName_eq, splitNameSuffix_eq, hwn]
+  rfl
 
 /-- Pure refinement for `Fs.isAbsolute`. -/
 theorem refinesPure_isAbsolute : Core.ObeysPureEq LeanSwe.Fs.isAbsolute LeanSwe.Fs.Model.isAbsolute :=
   fun _ => rfl
 
 /-- Pure refinement for `Fs.relativeTo`. -/
-theorem refinesPure_relativeTo : Core.ObeysPureEq2 LeanSwe.Fs.relativeTo LeanSwe.Fs.Model.relativeTo :=
-  fun _ _ => rfl
+theorem refinesPure_relativeTo : Core.ObeysPureEq2 LeanSwe.Fs.relativeTo LeanSwe.Fs.Model.relativeTo := fun p b => by
+  change Internal.relativeTo p b = Model.relativeTo p b
+  unfold Internal.relativeTo Model.relativeTo
+  have hnp : Internal.normPath p = Model.normPath p := refinesPure_normPath p
+  have hnb : Internal.normPath b = Model.normPath b := refinesPure_normPath b
+  simp only [hnp, hnb, cleanCharSegments_eq, stripPrefixParts_eq, joinSlashChars_eq]
+  rfl
 
 /-- Pure refinement for `Fs.mapRawError`. -/
 theorem refinesPure_mapRawError : Core.ObeysPureEq LeanSwe.Fs.mapRawError LeanSwe.Fs.Model.mapRawError :=
@@ -61,7 +195,7 @@ theorem refinesPure_mapRawError : Core.ObeysPureEq LeanSwe.Fs.mapRawError LeanSw
 
 private theorem withName_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (path newName : String) :
     Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.withName path newName) := by
-  change Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.Model.withName path newName)
+  rw [refinesPure_withName]
   unfold LeanSwe.Fs.Model.withName
   split
   · exact fun h => hk h.symm
@@ -71,7 +205,7 @@ private theorem withName_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (
 
 private theorem withSuffix_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (path newSuffix : String) :
     Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.withSuffix path newSuffix) := by
-  change Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.Model.withSuffix path newSuffix)
+  rw [refinesPure_withSuffix]
   unfold LeanSwe.Fs.Model.withSuffix
   split
   · exact fun h => hk h.symm
@@ -80,11 +214,11 @@ private theorem withSuffix_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput)
     · dsimp only
       split
       · exact fun h => hk h.symm
-      · exact withName_never_of k hk path _
+      · rw [← refinesPure_withName]; exact withName_never_of k hk path _
 
 private theorem relativeTo_never_of (k : FsErrorKind) (hk : k ≠ .invalidInput) (path base : String) :
     Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.relativeTo path base) := by
-  change Core.NeverErrorKindPure FsError.kind k (LeanSwe.Fs.Model.relativeTo path base)
+  rw [refinesPure_relativeTo]
   unfold LeanSwe.Fs.Model.relativeTo
   dsimp only
   split

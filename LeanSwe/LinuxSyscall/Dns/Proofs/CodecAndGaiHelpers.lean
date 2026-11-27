@@ -202,6 +202,221 @@ theorem normalizeGaiCodeForHost_invariants (host : String) (hints : ResolveHints
 theorem dnsErrorKind_beq_refl (k : DnsErrorKind) : (k == k) = true := by
   cases k <;> decide
 
+theorem parseUintDigitsImpl_eq (base maxVal : Nat) (cs : List Char) (acc : Nat) :
+    parseUintDigitsImpl? base maxVal cs acc = parseUintDigits? base maxVal cs acc := by
+  induction cs generalizing acc with
+  | nil => rfl
+  | cons c rest ih =>
+    have hHex : hexValImpl? c = hexVal? c := rfl
+    unfold parseUintDigitsImpl? parseUintDigits?
+    rw [hHex]
+    cases hexVal? c with
+    | none => rfl
+    | some d =>
+      dsimp only [bind, Option.bind]
+      split
+      · rfl
+      · split
+        · rfl
+        · exact ih (acc * base + d)
+
+theorem splitCharListAuxImpl_eq (sep : Char) (cs cur : List Char) (acc : List (List Char)) :
+    splitCharListAuxImpl sep cs cur acc = splitCharListAux sep cs cur acc := by
+  induction cs generalizing cur acc with
+  | nil => rfl
+  | cons c rest ih =>
+    unfold splitCharListAuxImpl splitCharListAux
+    split
+    · exact ih [] (cur.reverse :: acc)
+    · exact ih (c :: cur) acc
+
+theorem splitCharListImpl_eq (sep : Char) (cs : List Char) :
+    splitCharListImpl sep cs = splitCharList sep cs :=
+  splitCharListAuxImpl_eq sep cs [] []
+
+theorem splitDoubleColonAuxImpl_eq (cs cur : List Char) (acc : List (List Char)) :
+    splitDoubleColonAuxImpl cs cur acc = splitDoubleColonAux cs cur acc := by
+  match cs with
+  | [] => rfl
+  | [c] => simp only [splitDoubleColonAuxImpl, splitDoubleColonAux]
+  | c1 :: c2 :: rest =>
+    by_cases h : c1 = ':' ∧ c2 = ':'
+    · rcases h with ⟨rfl, rfl⟩
+      exact splitDoubleColonAuxImpl_eq rest [] (cur.reverse :: acc)
+    · have h1 : splitDoubleColonAuxImpl (c1 :: c2 :: rest) cur acc =
+          splitDoubleColonAuxImpl (c2 :: rest) (c1 :: cur) acc := by
+        conv => lhs; rw [splitDoubleColonAuxImpl.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; exact False.elim (h ⟨rfl, rfl⟩)
+        · rename_i heq; cases heq; rfl
+      have h2 : splitDoubleColonAux (c1 :: c2 :: rest) cur acc =
+          splitDoubleColonAux (c2 :: rest) (c1 :: cur) acc := by
+        conv => lhs; rw [splitDoubleColonAux.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; exact False.elim (h ⟨rfl, rfl⟩)
+        · rename_i heq; cases heq; rfl
+      rw [h1, h2]
+      exact splitDoubleColonAuxImpl_eq (c2 :: rest) (c1 :: cur) acc
+termination_by cs.length
+
+theorem splitDoubleColonCharsImpl_eq (cs : List Char) :
+    splitDoubleColonCharsImpl cs = splitDoubleColonChars cs :=
+  splitDoubleColonAuxImpl_eq cs [] []
+
+theorem parseIpv4AtonPartImpl_eq (cs : List Char) :
+    parseIpv4AtonPartImpl? cs = parseIpv4AtonPart? cs := by
+  unfold parseIpv4AtonPartImpl? parseIpv4AtonPart?
+  simp only [parseUintDigitsImpl_eq]
+  rfl
+
+theorem parseIpv4AtonImpl_eq (host : String) :
+    parseIpv4AtonImpl? host = parseIpv4Aton? host := by
+  unfold parseIpv4AtonImpl? parseIpv4Aton?
+  simp only [splitCharListImpl_eq, parseIpv4AtonPartImpl_eq]
+  rfl
+
+theorem parseStrictDecOctetImpl_eq (cs : List Char) :
+    parseStrictDecOctetImpl? cs = parseStrictDecOctet? cs := by
+  unfold parseStrictDecOctetImpl? parseStrictDecOctet?
+  simp only [parseUintDigitsImpl_eq]
+
+theorem parseStrictIpv4HextetsImpl_eq (cs : List Char) :
+    parseStrictIpv4HextetsImpl? cs = parseStrictIpv4Hextets? cs := by
+  unfold parseStrictIpv4HextetsImpl? parseStrictIpv4Hextets?
+  simp only [splitCharListImpl_eq, parseStrictDecOctetImpl_eq]
+  rfl
+
+theorem parseHexGroupImpl_eq (cs : List Char) :
+    parseHexGroupImpl? cs = parseHexGroup? cs := by
+  unfold parseHexGroupImpl? parseHexGroup?
+  simp only [parseUintDigitsImpl_eq]
+
+theorem parseIpv6PartsLoopImpl_eq (allowV4Tail : Bool) :
+    ∀ (parts : List (List Char)) (acc : List Nat),
+      parseIpv6PartsLoopImpl allowV4Tail parts acc = parseIpv6PartsLoop allowV4Tail parts acc
+  | [], _ => rfl
+  | [last], acc => by
+    unfold parseIpv6PartsLoopImpl parseIpv6PartsLoop
+    simp only [parseStrictIpv4HextetsImpl_eq, parseHexGroupImpl_eq]
+  | p :: p2 :: rest, acc => by
+    unfold parseIpv6PartsLoopImpl parseIpv6PartsLoop
+    simp only [parseHexGroupImpl_eq]
+    split
+    · rfl
+    · cases parseHexGroup? p with
+      | none => rfl
+      | some v => exact parseIpv6PartsLoopImpl_eq allowV4Tail (p2 :: rest) (v :: acc)
+
+theorem parseIpv6PartsImpl_eq (allowV4Tail : Bool) (cs : List Char) :
+    parseIpv6PartsImpl? allowV4Tail cs = parseIpv6Parts? allowV4Tail cs := by
+  unfold parseIpv6PartsImpl? parseIpv6Parts?
+  simp only [splitCharListImpl_eq, parseIpv6PartsLoopImpl_eq]
+
+theorem parseNumericZoneImpl_eq (zoneCs : List Char) :
+    parseNumericZoneImpl? zoneCs = parseNumericZone? zoneCs := by
+  unfold parseNumericZoneImpl? parseNumericZone?
+  simp only [parseUintDigitsImpl_eq]
+
+theorem splitFirstZoneAuxImpl_eq (cs acc : List Char) :
+    splitFirstZoneAuxImpl cs acc = splitFirstZoneAux cs acc := by
+  induction cs generalizing acc with
+  | nil => rfl
+  | cons c rest ih =>
+    by_cases hp : c = '%'
+    · subst hp; rfl
+    · have h1 : splitFirstZoneAuxImpl (c :: rest) acc = splitFirstZoneAuxImpl rest (c :: acc) := by
+        conv => lhs; rw [splitFirstZoneAuxImpl.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      have h2 : splitFirstZoneAux (c :: rest) acc = splitFirstZoneAux rest (c :: acc) := by
+        conv => lhs; rw [splitFirstZoneAux.eq_def]
+        split
+        · contradiction
+        · rename_i heq; cases heq; contradiction
+        · rename_i heq; cases heq; rfl
+      rw [h1, h2]
+      exact ih (c :: acc)
+
+theorem parseIpv6CoreImpl_eq (addrCs : List Char) :
+    parseIpv6CoreImpl? addrCs = parseIpv6Core? addrCs := by
+  unfold parseIpv6CoreImpl? parseIpv6Core?
+  simp only [splitDoubleColonCharsImpl_eq, parseIpv6PartsImpl_eq]
+  rfl
+
+theorem parseIpv6SplitZoneImpl_eq (host : String) :
+    parseIpv6SplitZoneImpl? host = parseIpv6SplitZone? host := by
+  unfold parseIpv6SplitZoneImpl? parseIpv6SplitZone?
+  simp only [splitFirstZoneAuxImpl_eq, parseIpv6CoreImpl_eq]
+  rfl
+
+theorem parsePureNumericAddrImpl_eq (host : String) :
+    parsePureNumericAddrImpl? host = parsePureNumericAddr? host := by
+  unfold parsePureNumericAddrImpl? parsePureNumericAddr?
+  simp only [parseIpv4AtonImpl_eq, parseIpv6SplitZoneImpl_eq, parseNumericZoneImpl_eq]
+  rfl
+
+theorem parseHybridScopedNumericZoneImpl_eq (host : String) :
+    parseHybridScopedNumericZoneImpl? host = parseHybridScopedNumericZone? host := by
+  unfold parseHybridScopedNumericZoneImpl? parseHybridScopedNumericZone?
+  simp only [parseIpv4AtonImpl_eq, parseIpv6SplitZoneImpl_eq, parseNumericZoneImpl_eq]
+  rfl
+
+theorem parseScopedNonNumericZoneImpl_eq (host : String) :
+    parseScopedNonNumericZoneImpl? host = parseScopedNonNumericZone? host := by
+  unfold parseScopedNonNumericZoneImpl? parseScopedNonNumericZone?
+  simp only [parseIpv4AtonImpl_eq, parseIpv6SplitZoneImpl_eq, parseNumericZoneImpl_eq]
+  rfl
+
+theorem checkSockTriplesImpl_eq : ∀ (addrs : List DnsAddr), checkSockTriplesImpl addrs = checkSockTriples addrs
+  | [] => rfl
+  | [_] => rfl
+  | [_, _] => rfl
+  | a :: b :: c :: rest => by
+    simp only [checkSockTriplesImpl, checkSockTriples, checkSockTriplesImpl_eq rest]
+
+theorem matchesSockTypeMultiplicityImpl_eq (hints : ResolveHints) (addrs : List DnsAddr) :
+    matchesSockTypeMultiplicityImpl hints addrs = matchesSockTypeMultiplicity hints addrs := by
+  unfold matchesSockTypeMultiplicityImpl matchesSockTypeMultiplicity
+  simp only [checkSockTriplesImpl_eq]
+  rfl
+
+theorem mapAddrForHintsImpl_eq (hints : ResolveHints) (a : DnsAddr) :
+    mapAddrForHintsImpl hints a = mapAddrForHints hints a := rfl
+
+theorem expandSockTypeImpl_eq (hints : ResolveHints) (addrs : List DnsAddr) :
+    expandSockTypeImpl hints addrs = expandSockType hints addrs := rfl
+
+theorem canSymbolicScopedOkImpl_eq (hints : ResolveHints) (baseAddr : DnsAddr) (zoneCs : List Char) :
+    canSymbolicScopedOkImpl hints baseAddr zoneCs = canSymbolicScopedOk hints baseAddr zoneCs := rfl
+
+theorem matchesSymbolicScopedAddrsImpl_eq (hints : ResolveHints) (baseAddr : DnsAddr) (addrs : List DnsAddr) :
+    matchesSymbolicScopedAddrsImpl hints baseAddr addrs = matchesSymbolicScopedAddrs hints baseAddr addrs := rfl
+
+theorem matchesHybridScopedAddrsImpl_eq (hints : ResolveHints) (baseAddr : DnsAddr) (sc : UInt32) (addrs : List DnsAddr) :
+    matchesHybridScopedAddrsImpl hints baseAddr sc addrs = matchesHybridScopedAddrs hints baseAddr sc addrs := rfl
+
+theorem isNumericFamilyMismatchImpl_eq (host : String) (hints : ResolveHints) :
+    isNumericFamilyMismatchImpl host hints = isNumericFamilyMismatch host hints := by
+  unfold isNumericFamilyMismatchImpl isNumericFamilyMismatch
+  simp only [parsePureNumericAddrImpl_eq, parseHybridScopedNumericZoneImpl_eq, parseScopedNonNumericZoneImpl_eq]
+  rfl
+
+theorem normalizeGaiCodeForHostImpl_eq (host : String) (hints : ResolveHints) (rc : Int32) :
+    normalizeGaiCodeForHostImpl host hints rc = normalizeGaiCodeForHost host hints rc := by
+  unfold normalizeGaiCodeForHostImpl normalizeGaiCodeForHost
+  simp only [isNumericFamilyMismatchImpl_eq]
+  rfl
+
+theorem emptyPayloadErrorImpl_eq (host : String) (hints : ResolveHints) :
+    emptyPayloadErrorImpl host hints = emptyPayloadError host hints := by
+  unfold emptyPayloadErrorImpl emptyPayloadError
+  simp only [isNumericFamilyMismatchImpl_eq, parsePureNumericAddrImpl_eq,
+    parseHybridScopedNumericZoneImpl_eq, parseScopedNonNumericZoneImpl_eq]
+
 /-- Soundness of `(mkDnsOpsM (m := Id) raw).getaddrinfo host hints` when `raw` returns an arbitrary `(rc, eno, msgBytes)` error. -/
 theorem mkDnsOpsM_id_error_sound (host : String) (hints : ResolveHints)
     (rc : Int32) (eno : UInt32) (msgBytes : ByteArray) :
@@ -211,7 +426,7 @@ theorem mkDnsOpsM_id_error_sound (host : String) (hints : ResolveHints)
   dsimp only [Bind.bind, Pure.pure]
   by_cases hv : validateHost host = true
   · have hnv : (!validateHost host) = false := by simp [hv]
-    simp only [hnv, Bool.false_eq_true, ↓reduceIte, classifyGaiError]
+    simp only [hnv, Bool.false_eq_true, ↓reduceIte, classifyGaiError, normalizeGaiCodeForHostImpl_eq]
     unfold allowedDnsOutcome
     simp only [hnv, Bool.false_eq_true, ↓reduceIte, Bool.and_eq_true]
     rcases normalizeGaiCodeForHost_invariants host hints rc with ⟨hValid, hAF, hMis⟩
@@ -253,7 +468,7 @@ theorem mkDnsOpsM_id_error_eq (host : String) (hv : validateHost host = true) (h
   unfold mkDnsOpsM
   dsimp only [Bind.bind, Pure.pure]
   have hnv : (!validateHost host) = false := by simp [hv]
-  simp only [hnv, Bool.false_eq_true, ↓reduceIte, classifyGaiError, decodeErrorMessage]
+  simp only [hnv, Bool.false_eq_true, ↓reduceIte, classifyGaiError, decodeErrorMessage, normalizeGaiCodeForHostImpl_eq]
   cases String.fromUTF8? msgBytes <;> rfl
 
 end LeanSwe.LinuxSyscall.Dns.Internal

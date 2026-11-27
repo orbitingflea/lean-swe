@@ -23,11 +23,7 @@ structure FsFilesCapM (fd : Type) (m : Type → Type) where
 abbrev HealthyFilesCapM (m : Type → Type) := FsFilesCapM HandleId m
 
 /-- Canonical lower-layer syscall capability bundle for `LeanSwe.Fs` over `LinuxSyscall.Files` and `LinuxSyscall.TimeRand`. -/
-structure FsSysCapsM (m : Type → Type) where
-  /-- Verified `LinuxSyscall.Files` syscall bundle over `RawFd`. -/
-  files : FilesOpsM m RawFd
-  /-- Verified `LinuxSyscall.TimeRand` syscall bundle for stateless temp-nonce generation. -/
-  timeRand : TimeRand.TimeRandOpsM m
+abbrev FsSysCapsM := LeanSwe.Fs.Internal.FsSysCapsM
 
 /-- Abstract healthy-OS world state for `LeanSwe.Fs`, pairing `LinuxSyscall.Files.HealthyEnv` with the monotonic temp-name counter. -/
 structure FsWorld where

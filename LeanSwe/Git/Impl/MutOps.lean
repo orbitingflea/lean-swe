@@ -1,12 +1,10 @@
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
 import LeanSwe.Git.Impl.Helpers
 import LeanSwe.Git.Impl.QueryOps
 
 namespace LeanSwe.Git.Impl
 
 open LeanSwe.Git
-open LeanSwe.Git.Model
 
 /-- Initialize a new repository at `path`. -/
 def initImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
@@ -18,7 +16,7 @@ def initImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
       match initialBranch? with
       | none => .ok #[]
       | some b =>
-        if isValidRefNameStr b.raw then .ok #["-b", b.raw]
+        if isValidRefNameStrImpl b.raw then .ok #["-b", b.raw]
         else .error { kind := .invalidRef, message := s!"invalid initial branch name: '{b.raw}'" }
     match branchArgs with
     | .error e => return .error e
@@ -31,7 +29,7 @@ def initImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
 /-- Clone a repository non-interactively from `source` to `target`. -/
 def cloneImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     (source target : String) (opts : CloneOptions) : m (Except GitError Unit) := do
-  match validateCloneEndpoint source, validateCloneEndpoint target with
+  match validateCloneEndpointImpl source, validateCloneEndpointImpl target with
   | .error e, _ => return .error e
   | _, .error e => return .error e
   | .ok (), .ok () =>
@@ -42,7 +40,7 @@ def cloneImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
       match opts.branch? with
       | none => .ok #[]
       | some b =>
-        if isValidRefNameStr b then .ok #["--branch", b]
+        if isValidRefNameStrImpl b then .ok #["--branch", b]
         else .error { kind := .invalidRef, message := s!"invalid clone branch: '{b}'" }
     match branchArgs with
     | .error e => return .error e
@@ -64,7 +62,7 @@ def addImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   | .ok () =>
     if !all && paths.isEmpty then
       return .error { kind := .invalidInput, message := "add requires non-empty paths or all = true" }
-    if !paths.all isValidPathArg then
+    if !paths.all isValidPathArgImpl then
       return .error { kind := .invalidPath, message := "invalid path passed to git add" }
     let args :=
       if all then
@@ -81,7 +79,7 @@ def commitImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    match validateCommitOptions opts with
+    match validateCommitOptionsImpl opts with
     | .error e => return .error e
     | .ok () =>
       let nEnv := match opts.authorName with
@@ -104,13 +102,13 @@ def createBranchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidRefNameStr branch.raw then
+    if !isValidRefNameStrImpl branch.raw then
       return .error { kind := .invalidRef, message := s!"invalid branch name: '{branch.raw}'" }
     let spArgs : Except GitError (Array String) :=
       match startPoint? with
       | none => .ok #[]
       | some sp =>
-        if isValidStrictRevSpec sp then
+        if isValidStrictRevSpecImpl sp then
           .ok #[sp]
         else
           .error { kind := .invalidInput, message := s!"invalid startPoint: '{sp}'" }
@@ -128,7 +126,7 @@ def deleteBranchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidRefNameStr branch.raw then
+    if !isValidRefNameStrImpl branch.raw then
       return .error { kind := .invalidRef, message := s!"invalid branch name: '{branch.raw}'" }
     let args := #["branch", if force then "-D" else "-d", "--", branch.raw]
     match ← runGitChecked ops "branch" { cwd := some repoPath, args := args } with
@@ -144,17 +142,17 @@ def checkoutImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
     let targetArgs : Except GitError (Array String) :=
       match target with
       | .branch b =>
-        if isValidRefNameStr b.raw then
+        if isValidRefNameStrImpl b.raw then
           .ok #[b.raw, "--"]
         else
           .error { kind := .invalidRef, message := s!"invalid branch name: '{b.raw}'" }
       | .commit cid =>
-        if isValidCommitIdStr cid.hex then
+        if isValidCommitIdStrImpl cid.hex then
           .ok #["--detach", cid.hex, "--"]
         else
           .error { kind := .invalidRef, message := s!"invalid commit ID: '{cid.hex}'" }
       | .ref spec =>
-        if isValidStrictRevSpec spec then
+        if isValidStrictRevSpecImpl spec then
           .ok #[spec, "--"]
         else
           .error { kind := .invalidInput, message := s!"invalid revision: '{spec}'" }
@@ -173,7 +171,7 @@ def switchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidRefNameStr branch.raw then
+    if !isValidRefNameStrImpl branch.raw then
       return .error { kind := .invalidRef, message := s!"invalid branch name: '{branch.raw}'" }
     if !create && startPoint?.isSome then
       return .error { kind := .invalidInput, message := "switch startPoint requires create = true" }
@@ -181,7 +179,7 @@ def switchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
       match startPoint? with
       | none => .ok #[]
       | some sp =>
-        if isValidStrictRevSpec sp then
+        if isValidStrictRevSpecImpl sp then
           .ok #[sp]
         else
           .error { kind := .invalidInput, message := s!"invalid startPoint: '{sp}'" }
@@ -203,7 +201,7 @@ def resetImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidStrictRevSpec rev then
+    if !isValidStrictRevSpecImpl rev then
       return .error { kind := .invalidInput, message := s!"invalid revision: '{rev}'" }
     let modeFlag :=
       match mode with
@@ -222,13 +220,13 @@ def fetchImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
   match validateRepoPath repoPath with
   | .error e => return .error e
   | .ok () =>
-    if !isValidRemoteOrRefspec remote then
+    if !isValidRemoteOrRefspecImpl remote then
       return .error { kind := .invalidInput, message := s!"invalid remote name: '{remote}'" }
     let refArgs : Except GitError (Array String) :=
       match refspec? with
       | none => .ok #[]
       | some r =>
-        if isValidRemoteOrRefspec r then
+        if isValidRemoteOrRefspecImpl r then
           .ok #[r]
         else
           .error { kind := .invalidInput, message := s!"invalid refspec: '{r}'" }
@@ -255,7 +253,7 @@ def worktreeAddImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
         match opts.newBranch? with
         | none => .ok #[]
         | some b =>
-          if isValidRefNameStr b.raw then .ok #["-b", b.raw]
+          if isValidRefNameStrImpl b.raw then .ok #["-b", b.raw]
           else .error { kind := .invalidRef, message := s!"invalid branch name: '{b.raw}'" }
       match branchArgs with
       | .error e => return .error e
@@ -264,7 +262,7 @@ def worktreeAddImpl {m : Type → Type} [Monad m] (ops : RawGitOpsM m)
           match opts.target? with
           | none => .ok #[]
           | some t =>
-            if isValidStrictRevSpec t then .ok #[t]
+            if isValidStrictRevSpecImpl t then .ok #[t]
             else .error { kind := .invalidInput, message := s!"invalid worktree target: '{t}'" }
         match targetArgs with
         | .error e => return .error e

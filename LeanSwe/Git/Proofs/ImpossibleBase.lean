@@ -232,6 +232,13 @@ theorem runGitRaw_res (req : GitRawRequest) (w : Void IO.RealWorld) :
       · cases hcwd
       · cases hcwd
         rename_i hinv
+        have hPathEq : LeanSwe.Git.Impl.isValidPathArgImpl p = LeanSwe.Git.Model.isValidPathArg p := by
+          unfold LeanSwe.Git.Impl.isValidPathArgImpl LeanSwe.Git.Model.isValidPathArg
+          have hNul : ∀ cs, LeanSwe.Git.Impl.hasNulCharImpl cs = LeanSwe.Git.Model.hasNulChar cs := by
+            intro cs; induction cs with | nil => rfl | cons c r ih => simp [LeanSwe.Git.Impl.hasNulCharImpl, LeanSwe.Git.Model.hasNulChar, ih]
+          dsimp only
+          rw [hNul]
+        rw [hPathEq] at hinv
         have hinvF : LeanSwe.Git.Model.isValidPathArg p = false := Bool.eq_false_iff.mpr hinv
         exact Or.inl ⟨rfl, p, rfl, hinvF⟩
   | ok _ =>
@@ -258,7 +265,7 @@ theorem runGitRaw_res (req : GitRawRequest) (w : Void IO.RealWorld) :
           cases he
           exact Or.inr (Or.inr (Or.inr (hkenv e rfl)))
         | ok inherited =>
-          rcases defaultOps_execGit_res (LeanSwe.Git.Model.cleanGitEnv inherited req.extraEnv) req w1 with
+          rcases defaultOps_execGit_res (LeanSwe.Git.Impl.cleanGitEnvImpl inherited req.extraEnv) req w1 with
             ⟨re, w2, hw2, hke⟩
           exact ⟨re, w2, hw2, fun e he => by
             rcases hke e he with h | h | h
@@ -368,6 +375,16 @@ theorem validateFsPathArg_kinds (p : String) (e : GitError)
 theorem validateRepoPath_never (repoPath : String) (e : GitError)
     (h : LeanSwe.Git.Impl.validateRepoPath repoPath = .error e) :
     e.kind ≠ .notARepo ∧ e.kind ≠ .parseError := by
+  have hEq : LeanSwe.Git.Impl.validateRepoPath repoPath = LeanSwe.Git.Model.validateFsPathArg repoPath := by
+    have hPathEq : LeanSwe.Git.Impl.isValidPathArgImpl repoPath = LeanSwe.Git.Model.isValidPathArg repoPath := by
+      unfold LeanSwe.Git.Impl.isValidPathArgImpl LeanSwe.Git.Model.isValidPathArg
+      have hNul : ∀ cs, LeanSwe.Git.Impl.hasNulCharImpl cs = LeanSwe.Git.Model.hasNulChar cs := by
+        intro cs; induction cs with | nil => rfl | cons c r ih => simp [LeanSwe.Git.Impl.hasNulCharImpl, LeanSwe.Git.Model.hasNulChar, ih]
+      dsimp only
+      rw [hNul]
+    unfold LeanSwe.Git.Impl.validateRepoPath LeanSwe.Git.Impl.validateFsPathArgImpl LeanSwe.Git.Model.validateFsPathArg
+    rw [hPathEq]
+  rw [hEq] at h
   rcases validateFsPathArg_kinds repoPath e h with hk | hk <;> rw [hk] <;> exact ⟨by decide, by decide⟩
 
 /-- `Model.validateCloneEndpoint` produces only `.invalidInput`. -/

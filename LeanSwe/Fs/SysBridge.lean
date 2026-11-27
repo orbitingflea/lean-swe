@@ -3,7 +3,7 @@ import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Interface
 import LeanSwe.LinuxSyscall.TimeRand.Interface
 import LeanSwe.Fs.Types
-import LeanSwe.Fs.Model
+import LeanSwe.Fs.Types.Internal
 import LeanSwe.Fs.SysBridge.Common
 
 namespace LeanSwe.Fs.SysBridge
@@ -11,7 +11,70 @@ namespace LeanSwe.Fs.SysBridge
 open LeanSwe.LinuxSyscall
 open LeanSwe.LinuxSyscall.Files
 open LeanSwe.Fs
-open LeanSwe.Fs.Model (RawFsOpsM RawFsOps RawDirOpsM RawDirOps mapRawError isValidRawPath validSeg_dotT)
+open LeanSwe.Fs.Internal (RawFsOpsM RawDirOpsM)
+
+private theorem toDigitsCore_mem_digit_or_acc (fuel base n : Nat) (acc : List Char) (c : Char)
+    (hBase : base = 10) (hMem : c ∈ Nat.toDigitsCore base fuel n acc) :
+    c ∈ acc ∨ ∃ d < 10, c = Nat.digitChar d := by
+  induction fuel generalizing n acc with
+  | zero =>
+    simp [Nat.toDigitsCore] at hMem
+    exact Or.inl hMem
+  | succ f ih =>
+    unfold Nat.toDigitsCore at hMem
+    dsimp only at hMem
+    split at hMem
+    · simp only [List.mem_cons] at hMem
+      rcases hMem with rfl | hAcc
+      · exact Or.inr ⟨n % base, by subst hBase; exact Nat.mod_lt _ (by decide), rfl⟩
+      · exact Or.inl hAcc
+    · rcases ih (n / base) (Nat.digitChar (n % base) :: acc) hMem with hAcc | hDig
+      · simp only [List.mem_cons] at hAcc
+        rcases hAcc with rfl | hOld
+        · exact Or.inr ⟨n % base, by subst hBase; exact Nat.mod_lt _ (by decide), rfl⟩
+        · exact Or.inl hOld
+      · exact Or.inr hDig
+
+private theorem nat_toString_digits (n : Nat) (c : Char) (hMem : c ∈ (toString n).toList) :
+    c ≠ '/' ∧ c ≠ Char.ofNat 0 := by
+  have hDig : c ∈ Nat.toDigits 10 n := by simpa [toString, Nat.repr] using hMem
+  unfold Nat.toDigits at hDig
+  rcases toDigitsCore_mem_digit_or_acc (n + 1) 10 n [] c rfl hDig with hc | ⟨d, hd, rfl⟩
+  · simp at hc
+  · rcases d with _ | _ | _ | _ | _ | _ | _ | _ | _ | _ | d
+    all_goals first | decide | omega
+
+private theorem validSeg_dotT (n : Nat) : validSeg (".t." ++ toString n) = true := by
+  have hNoSlash : (".t." ++ toString n).toList.contains '/' = false := by
+    refine Bool.eq_false_iff.mpr ?_
+    intro hm
+    have hMem : '/' ∈ (".t." ++ toString n).toList := List.contains_iff_mem.mp hm
+    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide, List.mem_append] at hMem
+    rcases hMem with hP | hN
+    · simp at hP
+    · exact (nat_toString_digits n '/' hN).1 rfl
+  have hNoNul : (".t." ++ toString n).toList.contains (Char.ofNat 0) = false := by
+    refine Bool.eq_false_iff.mpr ?_
+    intro hm
+    have hMem : Char.ofNat 0 ∈ (".t." ++ toString n).toList := List.contains_iff_mem.mp hm
+    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide, List.mem_append] at hMem
+    rcases hMem with hP | hN
+    · simp at hP
+    · exact (nat_toString_digits n (Char.ofNat 0) hN).2 rfl
+  have hNeEmpty : (!(".t." ++ toString n).toList.isEmpty) = true := by
+    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
+    simp
+  have hNeDot : ((".t." ++ toString n).toList != ['.']) = true := by
+    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
+    simp
+  have hNeDotDot : ((".t." ++ toString n).toList != ['.', '.']) = true := by
+    rw [String.toList_append, show ".t.".toList = ['.', 't', '.'] by decide]
+    simp
+  change (!(".t." ++ toString n).toList.isEmpty && !(".t." ++ toString n).toList.contains '/' &&
+    !(".t." ++ toString n).toList.contains (Char.ofNat 0) &&
+    (".t." ++ toString n).toList != ['.'] && (".t." ++ toString n).toList != ['.', '.']) = true
+  rw [hNeEmpty, hNoSlash, hNoNul, hNeDot, hNeDotDot]
+  rfl
 
 /-- Build a parametric `RawFsOpsM m fd` bundle purely over `FilesOpsM m fd` and nonce source `nextNonce` (`createDir` uses `0o777` and `writeBytes`/`appendText` use `0o666` masked by process `umask`, while `createFileNew`/`acquireLock` preserve historical `0o644`). -/
 def mkRawFsOpsM {m : Type → Type} [Monad m] {fd : Type}

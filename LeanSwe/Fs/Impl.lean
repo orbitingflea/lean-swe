@@ -6,7 +6,6 @@ namespace LeanSwe.Fs.Internal
 open LeanSwe.Fs
   (FsErrorKind FsError EntryKind FileStat WalkEntry FsRawError LockMode FsApi FsApiM
    EntryName RelPath SubtreeM SubtreeOpenerM)
-open LeanSwe.Fs.Model (NonLockFsOpsM RawFsOpsM RawDirOpsM ScopedRawFsOpsM)
 
 /-- Build a generic `FsApiM m` from handle-free `ScopedRawFsOpsM m` primitives. -/
 def mkApiFromScopedRawM {m : Type → Type} [Monad m] [MonadFinally m]
