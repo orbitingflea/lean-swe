@@ -1,6 +1,6 @@
-import LeanSweProofs.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Model
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- RFC 4231 Test Case 2 inner key-block SHA-256 compression lemma. -/
@@ -23,4 +23,4 @@ theorem hmac_tc2_hi1 :
       0xd4, 0xe7, 0xe9, 0x17, 0xc6, 0x29, 0xca, 0xd7] := by
   decide
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs

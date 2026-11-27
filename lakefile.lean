@@ -62,7 +62,7 @@ extern_lib «leanswe_sqlite» pkg := do
 
 extern_lib «leanswe_cryptohash» pkg := do
   let oFile := pkg.buildDir / "c" / "cryptohash_shim.o"
-  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "CryptoHash" / "Raw" / "c" / "cryptohash_shim.c")
+  let srcJob ← inputTextFile (pkg.dir / "LeanSwe" / "CryptoHash" / "c" / "cryptohash_shim.c")
   let lean ← getLeanInstall
   let oJob ← buildO oFile srcJob
     #["-I", lean.includeDir.toString]

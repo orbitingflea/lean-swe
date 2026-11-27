@@ -1,12 +1,23 @@
 import LeanSwe.CryptoHash.Types
 import LeanSwe.CryptoHash.Impl
-import LeanSwe.CryptoHash.Raw.Interface
 
 namespace LeanSwe.CryptoHash
 
-/-- Default `IO` cryptographic hash and HMAC API backed by OpenSSL 3 `libcrypto`. -/
+@[extern "leanswe_cryptohash_digest"]
+private opaque rawDigest : UInt8 → @& ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
+
+@[extern "leanswe_cryptohash_hmac_sha256"]
+private opaque rawHmacSha256 : @& ByteArray → @& ByteArray → BaseIO (UInt32 × UInt64 × String × ByteArray)
+
+@[extern "leanswe_cryptohash_ct_equal"]
+private opaque rawCtEqual : @& ByteArray → @& ByteArray → BaseIO Bool
+
+/-- Default `IO` cryptographic hash and HMAC API backed by OpenSSL 3 `libcrypto` via `c/cryptohash_shim.c`. -/
 def defaultApi : CryptoHashApi :=
-  Internal.mkApiM Raw.defaultOps
+  Internal.mkApiFromFfiM
+    { digestRaw := fun tag data => liftM (rawDigest tag data)
+      hmacSha256Raw := fun key msg => liftM (rawHmacSha256 key msg)
+      ctEqualRaw := fun a b => liftM (rawCtEqual a b) }
 
 /-- Convert a raw error record into a normalized `CryptoHashError` with a non-empty message. -/
 @[inline] def mapRawError (err : CryptoHashRawError) : CryptoHashError :=

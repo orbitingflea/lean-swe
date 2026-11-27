@@ -2,9 +2,6 @@ import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Common.Suite
-import LeanSwe.CryptoHash.Raw.Types
-import LeanSweProofs.CryptoHash.Raw.Model
-import LeanSwe.CryptoHash.Raw.Interface
 import LeanSwe.CryptoHash.Types
 import LeanSweProofs.CryptoHash.Model
 import LeanSwe.CryptoHash.Interface
@@ -325,9 +322,6 @@ private def requiredBuckets : Array CoverageBucket := #[
   bucket "ctEq" "true_nonempty",
   bucket "ctEq" "false_same_len",
   bucket "ctEq" "false_diff_len",
-  bucket "raw_ctEqualRaw" "ok_true",
-  bucket "raw_ctEqualRaw" "ok_false",
-  bucket "raw_ctEqualRaw" "err_lengthMismatch",
   bucket "raw_digest" "err_alg_tag_oob",
   bucket "fromHex" "ok_roundtrip",
   bucket "fromHex" "ok_mixed_case",
@@ -354,7 +348,7 @@ private def logCryptoErr {α : Type} (emitErrHits : Bool) (qualOp : String)
     (res : Except CryptoHashError α) : IO Unit := do
   if emitErrHits then
     if let .error e := res then
-      Fuzz.Common.logErrHit qualOp s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "real"
+      Fuzz.Common.logErrHit qualOp s!"LeanSwe.CryptoHash.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "real"
 
 private def exceptClass {α : Type} : Except CryptoHashError α → String
   | .ok _ => "ok"
@@ -384,16 +378,16 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
   let msg := c.msg
   let key := c.key
   let chunks := c.chunks
-  let exp256One := Raw.Model.digestBytesModel .sha256 msg
-  let exp256Stream := Raw.Model.sha256Chunks chunks
+  let exp256One := Model.digestBytesModel .sha256 msg
+  let exp256Stream := Model.sha256Chunks chunks
   if exp256One != exp256Stream then
     return .error s!"sha256 one-shot model != streaming model at len={msg.size}"
-  let exp512One := Raw.Model.digestBytesModel .sha512 msg
-  let exp512Stream := Raw.Model.sha512Chunks chunks
+  let exp512One := Model.digestBytesModel .sha512 msg
+  let exp512Stream := Model.sha512Chunks chunks
   if exp512One != exp512Stream then
     return .error s!"sha512 one-shot model != streaming model at len={msg.size}"
-  let expHmacOne := Raw.Model.hmacSha256Bytes key msg
-  let expHmacStream := Raw.Model.hmacSha256Chunks key chunks
+  let expHmacOne := Model.hmacSha256Bytes key msg
+  let expHmacStream := Model.hmacSha256Chunks key chunks
   if expHmacOne != expHmacStream then
     return .error s!"hmac one-shot model != streaming model at keyLen={key.size} msgLen={msg.size}"
   let mut pyReply? : Option PyOracleReply := none
@@ -409,10 +403,6 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
       return .error s!"hmac Python oracle mismatch at keyLen={key.size} msgLen={msg.size}"
     pyReply? := some rep
     cov := cov.record "python_oracle" "verified"
-  let r256 ← Raw.digestRaw .sha256 msg
-  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.digestRaw" r256
-  if let .error e := ← expectOkEq "Raw.digestRaw sha256" r256 (.ok exp256One) then
-    return .error e
   let h256 ← LeanSwe.CryptoHash.hash .sha256 msg
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.hash" h256
   if let .error e := ← expectOkEq "CryptoHash.hash sha256" h256 (Model.hashModel .sha256 msg) then
@@ -421,10 +411,6 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.sha256" s256
   if let .error e := ← expectOkEq "CryptoHash.sha256" s256 (Model.sha256Model msg) then
     return .error e
-  let r512 ← Raw.digestRaw .sha512 msg
-  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.digestRaw" r512
-  if let .error e := ← expectOkEq "Raw.digestRaw sha512" r512 (.ok exp512One) then
-    return .error e
   let h512 ← LeanSwe.CryptoHash.hash .sha512 msg
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.hash" h512
   if let .error e := ← expectOkEq "CryptoHash.hash sha512" h512 (Model.hashModel .sha512 msg) then
@@ -432,10 +418,6 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
   let s512 ← LeanSwe.CryptoHash.sha512 msg
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.sha512" s512
   if let .error e := ← expectOkEq "CryptoHash.sha512" s512 (Model.sha512Model msg) then
-    return .error e
-  let rMac ← Raw.hmacSha256Raw key msg
-  logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.hmacSha256Raw" rMac
-  if let .error e := ← expectOkEq "Raw.hmacSha256Raw" rMac (.ok expHmacOne) then
     return .error e
   let cMac ← LeanSwe.CryptoHash.hmacSha256 key msg
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.hmacSha256" cMac
@@ -479,7 +461,7 @@ private def checkDigestAndOracle (c : CryptoCase) (oracle? : Option PyOracle)
 private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleReply)
     (tr : CoverageTracker) (emitErrHits : Bool := false) : IO (Except String CoverageTracker) := do
   let mut cov := tr
-  let tag := Raw.Model.hmacSha256Bytes c.key c.msg
+  let tag := Model.hmacSha256Bytes c.key c.msg
   let validDig : Digest := { alg := .sha256, bytes := tag }
   let resValid ← LeanSwe.CryptoHash.verifyHmacSha256 c.key c.msg validDig
   logCryptoErr emitErrHits "LeanSwe.CryptoHash.verifyHmacSha256" resValid
@@ -529,24 +511,17 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
     logCryptoErr emitErrHits "LeanSwe.CryptoHash.ctEq" rCt
     if let .error e := ← expectOkEq "ctEq" rCt (Model.ctEqModel a b) then
       return .error e
-    let rRawCt ← Raw.ctEqualRaw a b
-    logCryptoErr emitErrHits "LeanSwe.CryptoHash.Raw.ctEqualRaw" rRawCt
-    if let .error e := ← expectOkEq "ctEqualRaw" rRawCt (Raw.Model.ctEqualRawModel a b) then
-      return .error e
     if a.size == b.size then
       if a == b then
         if a.size == 0 then
           cov := cov.record "ctEq" "true_empty"
         else
           cov := cov.record "ctEq" "true_nonempty"
-        cov := cov.record "raw_ctEqualRaw" "ok_true"
       else
         cov := cov.record "ctEq" "false_same_len"
-        cov := cov.record "raw_ctEqualRaw" "ok_false"
     else
       cov := cov.record "ctEq" "false_diff_len"
-      cov := cov.record "raw_ctEqualRaw" "err_lengthMismatch"
-  let dig512 : Digest := { alg := .sha512, bytes := Raw.Model.digestBytesModel .sha512 c.msg }
+  let dig512 : Digest := { alg := .sha512, bytes := Model.digestBytesModel .sha512 c.msg }
   for dig in [validDig, dig512] do
     let hex := LeanSwe.CryptoHash.toHex dig
     if hex != Model.toHexModel dig then
@@ -586,7 +561,7 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
     return .error s!"fromHex sha512 extraHex:{exceptClass mExtra512}:{exceptClass rExtra512}:len={c.extraHex.length}"
   if let some pyRep := pyReply? then
     for (alg, res) in [(.sha256, rExtra256), (.sha512, rExtra512)] do
-      let needLen := Raw.digestLen alg
+      let needLen := digestLen alg
       match pyRep.hexDecoded, res with
       | none, .error e =>
         if e.kind != .invalidHex then
@@ -619,8 +594,7 @@ private def checkVerifyAndCtAndHex (c : CryptoCase) (pyReply? : Option PyOracleR
     | .opensslError _ _ => "opensslError"
     | .userError _ => "userError"
   let rMap := LeanSwe.CryptoHash.mapRawError c.rawErr
-  let rRawMap := Raw.mapRawError c.rawErr
-  if rMap != Raw.Model.mapRawErrorModel c.rawErr || rRawMap != Raw.Model.mapRawErrorModel c.rawErr then
+  if rMap != Model.mapRawErrorModel c.rawErr then
     return .error s!"mapRawError.{mapBucket}:ok:ok: mismatch on {repr c.rawErr}"
   cov := cov.record "mapRawError" mapBucket
   return .ok cov
@@ -1178,6 +1152,17 @@ private def smokeRandomBuckets : Array CoverageBucket := #[
   bucket "fromHex" "ok_mixed_case"
 ]
 
+private def checkMockErr {α : Type} (qualOp : String) (expected : CryptoHashErrorKind)
+    (res : Except CryptoHashError α) : IO Unit := do
+  match res with
+  | .error e =>
+    if e.kind != expected || e.message.isEmpty then
+      throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_MISMATCH: {qualOp} expected {repr expected}, got {repr e}")
+    Fuzz.Common.logErrHit qualOp
+      s!"LeanSwe.CryptoHash.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "mocked"
+  | .ok _ =>
+    throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_UNEXPECTED_OK: {qualOp} expected {repr expected}")
+
 private def runMockedRawErrorProbes : IO Unit := do
   let cases : Array (CryptoHashErrorKind × (UInt32 × UInt64 × String × ByteArray)) := #[
     (.invalidInput, (1, 0, "mock invalid argument", ByteArray.empty)),
@@ -1185,31 +1170,22 @@ private def runMockedRawErrorProbes : IO Unit := do
     (.cryptoError, (3, 123, "mock crypto error", ByteArray.empty))
   ]
   let okTuple : UInt32 × UInt64 × String × ByteArray := (0, 0, "", ByteArray.empty)
+  let dummyTag : Digest := { alg := .sha256, bytes := ByteArray.mk (Array.replicate 32 0) }
   for (expected, rawTuple) in cases do
-    let dOps := Raw.Internal.mkRawOps
+    let dApi := Internal.mkApiFromFfiM
       { digestRaw := fun _ _ => pure rawTuple
         hmacSha256Raw := fun _ _ => pure okTuple
         ctEqualRaw := fun _ _ => pure false }
-    match ← dOps.digestRaw .sha256 ByteArray.empty with
-    | .error e =>
-      if e.kind != expected || e.message.isEmpty then
-        throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_MISMATCH: digestRaw expected {repr expected}, got {repr e}")
-      Fuzz.Common.logErrHit "LeanSwe.CryptoHash.Raw.digestRaw"
-        s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "mocked"
-    | .ok _ =>
-      throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_UNEXPECTED_OK: digestRaw expected {repr expected}")
-    let hOps := Raw.Internal.mkRawOps
+    checkMockErr "LeanSwe.CryptoHash.hash" expected (← dApi.hash .sha256 ByteArray.empty)
+    checkMockErr "LeanSwe.CryptoHash.sha256" expected (← dApi.sha256 ByteArray.empty)
+    checkMockErr "LeanSwe.CryptoHash.sha512" expected (← dApi.sha512 ByteArray.empty)
+    let hApi := Internal.mkApiFromFfiM
       { digestRaw := fun _ _ => pure okTuple
         hmacSha256Raw := fun _ _ => pure rawTuple
         ctEqualRaw := fun _ _ => pure false }
-    match ← hOps.hmacSha256Raw ByteArray.empty ByteArray.empty with
-    | .error e =>
-      if e.kind != expected || e.message.isEmpty then
-        throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_MISMATCH: hmacSha256Raw expected {repr expected}, got {repr e}")
-      Fuzz.Common.logErrHit "LeanSwe.CryptoHash.Raw.hmacSha256Raw"
-        s!"LeanSwe.CryptoHash.Raw.CryptoHashErrorKind.{cryptoErrKindTag e.kind}" "mocked"
-    | .ok _ =>
-      throw (IO.userError s!"CRYPTOHASH_MOCK_PROBE_UNEXPECTED_OK: hmacSha256Raw expected {repr expected}")
+    checkMockErr "LeanSwe.CryptoHash.hmacSha256" expected (← hApi.hmacSha256 ByteArray.empty ByteArray.empty)
+    checkMockErr "LeanSwe.CryptoHash.verifyHmacSha256" expected
+      (← hApi.verifyHmacSha256 ByteArray.empty ByteArray.empty dummyTag)
 
 private def runCryptoHashLoop (steps : Nat) (seedVal : UInt64) (isSmoke : Bool) : IO Unit := do
   runMockedRawErrorProbes
@@ -1567,7 +1543,7 @@ def runSelfTestShrink (seedVal : UInt64) : IO Unit := do
 
   IO.println s!"CRYPTOHASH_SHRINK_SELFTEST_OK: original={batch.size} shrunk=1 lens=(65, 65) suffix_hex_ok=true chunk_bytes=64 chunk_trials={trials3} nonpow2_trials={trials4} interior_ok=true"
 
-/-- Differential fuzzing suite for `LeanSwe.CryptoHash` and `LeanSwe.CryptoHash.Raw` against pure models and Python `hashlib`/`hmac`. -/
+/-- Differential fuzzing suite for `LeanSwe.CryptoHash` against pure models and Python `hashlib`/`hmac`. -/
 def suite : FuzzSuite := {
   name := "cryptohash"
   description := "OpenSSL 3 SHA-256/SHA-512/HMAC-SHA256 vs pure streaming Lean models & Python hashlib/hmac fuzzer"

@@ -1,9 +1,9 @@
-import LeanSweProofs.CryptoHash.Raw.Model
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacEmptyInner
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacTc2Inner
-import LeanSweProofs.CryptoHash.Raw.Proofs.HmacTc2Outer
+import LeanSweProofs.CryptoHash.Model
+import LeanSweProofs.CryptoHash.Proofs.HmacEmptyInner
+import LeanSweProofs.CryptoHash.Proofs.HmacTc2Inner
+import LeanSweProofs.CryptoHash.Proofs.HmacTc2Outer
 
-namespace LeanSwe.CryptoHash.Raw.Proofs
+namespace LeanSwe.CryptoHash.Proofs
 
 set_option maxRecDepth 16384 in
 /-- RFC 4231 Test Case 2 HMAC-SHA256 vector for `Model.hmacSha256Bytes`. -/
@@ -26,4 +26,4 @@ theorem hmac_tc2_vec :
   exact hmac_decomposed "Jefe".toUTF8 "what do ya want for nothing?".toUTF8 kb ipad opad innerB _ ipadH opadH
     (by decide) (by decide) (by decide) hmac_tc2_hi0 hmac_tc2_hi1 hmac_tc2_ho0 (by decide)
 
-end LeanSwe.CryptoHash.Raw.Proofs
+end LeanSwe.CryptoHash.Proofs
