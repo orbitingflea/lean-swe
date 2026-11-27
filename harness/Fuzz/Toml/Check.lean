@@ -3,7 +3,6 @@ import Fuzz.Common.Suite
 import Fuzz.Toml.Oracle
 import Fuzz.Toml.Gen
 import LeanSwe.Toml.Interface
-import LeanSwe.Toml.Impl
 import LeanSwe.Toml.Model
 import LeanSwe.NumParse.Model
 

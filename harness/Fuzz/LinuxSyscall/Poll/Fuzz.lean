@@ -2,10 +2,8 @@ import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Poll.Types
 import LeanSwe.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Poll.Interface
-import LeanSwe.LinuxSyscall.Poll.Impl
 import LeanSwe.LinuxSyscall.Net.Types
 import LeanSwe.LinuxSyscall.Net.Interface
-import LeanSwe.LinuxSyscall.Net.Impl
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import Fuzz.LinuxSyscall.Rng
 import Fuzz.LinuxSyscall.SandboxEnv

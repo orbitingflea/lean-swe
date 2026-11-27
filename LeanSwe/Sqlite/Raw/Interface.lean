@@ -292,4 +292,9 @@ def defaultOps : RawSqliteOps :=
 @[inline] def activeStmtCount : IO Nat :=
   defaultOps.activeStmtCount
 
+/-- `defaultOps.mapRawError (.invalidArgument detail)` always has `.kind = .invalidInput`. -/
+theorem defaultOps_mapRawError_invalidArgument_kind (detail : String) :
+    (defaultOps.mapRawError (.invalidArgument detail)).kind = .invalidInput :=
+  rfl
+
 end LeanSwe.Sqlite.Raw

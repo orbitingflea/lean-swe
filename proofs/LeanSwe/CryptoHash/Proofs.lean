@@ -13,157 +13,32 @@ open Core
 open Core.NondetTest
 open LeanSwe.CryptoHash
 
-private theorem nonEmptyMsg_ne_empty (fallback msg : String) (hfb : fallback ≠ "") :
-    Raw.Internal.nonEmptyMsg fallback msg ≠ "" := by
-  unfold Raw.Internal.nonEmptyMsg
-  split
-  · exact hfb
-  · rename_i hne
-    intro hemp
-    apply hne
-    simp [hemp]
-
 /-- `defaultApi.mapRawError` satisfies `test_cryptohash_mapRawError_preservesContract`. -/
 theorem cryptohash_mapRawError_preservesContract :
     AllPass (test_cryptohash_mapRawError_preservesContract defaultApi) := by
   intro raw
+  have hspec := Raw.defaultOps_mapRawError_spec raw
   cases raw with
-  | invalidArgument detail =>
+  | invalidArgument detail | invalidHexInput detail | lengthError expected got detail
+  | opensslError code detail | userError detail =>
     dsimp [test_cryptohash_mapRawError_preservesContract, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM, Raw.Internal.mapRawError,
       Core.NondetTest.assert, Bind.bind]
-    exact ⟨nonEmptyMsg_ne_empty "invalid cryptohash argument" detail (by decide), ⟨rfl, rfl⟩, trivial⟩
-  | invalidHexInput detail =>
-    dsimp [test_cryptohash_mapRawError_preservesContract, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM, Raw.Internal.mapRawError,
-      Core.NondetTest.assert, Bind.bind]
-    exact ⟨nonEmptyMsg_ne_empty "invalid hex input" detail (by decide), ⟨rfl, rfl⟩, trivial⟩
-  | lengthError expected got detail =>
-    dsimp [test_cryptohash_mapRawError_preservesContract, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM, Raw.Internal.mapRawError,
-      Core.NondetTest.assert, Bind.bind]
-    refine ⟨nonEmptyMsg_ne_empty s!"length mismatch: expected {expected} bytes, got {got}" detail ?_,
-      ⟨rfl, rfl⟩, trivial⟩
-    intro h
-    have hlen := congrArg String.length h
-    simp [String.length] at hlen
-  | opensslError code detail =>
-    dsimp [test_cryptohash_mapRawError_preservesContract, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM, Raw.Internal.mapRawError,
-      Core.NondetTest.assert, Bind.bind]
-    exact ⟨nonEmptyMsg_ne_empty "openssl crypto error" detail (by decide), ⟨rfl, rfl⟩, trivial⟩
-  | userError detail =>
-    dsimp [test_cryptohash_mapRawError_preservesContract, defaultApi, Internal.mkApiM,
-      Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM, Raw.Internal.mapRawError,
-      Core.NondetTest.assert, Bind.bind]
-    exact ⟨nonEmptyMsg_ne_empty "cryptohash error" detail (by decide), ⟨rfl, rfl⟩, trivial⟩
-
-private theorem baseIO_liftM_never_throws {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
-    ∃ a w', (liftM act : IO α) w = .ok a w' := by
-  simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO]
-  cases act w with
-  | mk a s => exact ⟨a, s, rfl⟩
-
-private theorem io_bind_baseIO {α β : Type} (act : BaseIO α) (k : α → IO β) (w : Void IO.RealWorld) :
-    ((liftM act : IO α) >>= k) w = k (act w).val (act w).state := by
-  rcases baseIO_liftM_never_throws act w with ⟨v, w', hv⟩
-  have hst : act w = .mk v w' := by
-    simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO] at hv
-    cases h : act w with
-    | mk a s =>
-      rw [h] at hv
-      have ha : a = v := by injection hv
-      have hs : s = w' := by injection hv
-      subst ha hs
-      rfl
-  rw [hst]
-  have hbind : ((liftM act : IO α) >>= k) w =
-      match (liftM act : IO α) w with
-      | EST.Out.ok a s => k a s
-      | EST.Out.error e s => EST.Out.error e s := rfl
-  rw [hbind, hv]
-
-private theorem decodeShimError_ne_invalidHex (status : UInt32) (code : UInt64) (detail : String) :
-    (Raw.Internal.decodeShimError status code detail).kind ≠ .invalidHex := by
-  unfold Raw.Internal.decodeShimError Raw.Internal.decodeOpenSslError Raw.Internal.mapRawError
-  split
-  · simp
-  · split <;> simp
-
-private theorem mkRawOps_digestRaw_outcome (ffi : Raw.CryptoHashFfiOps)
-    (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
-    (∃ bs w', ((Raw.Internal.mkRawOps ffi).digestRaw alg data) w = .ok (.ok bs) w' ∧ bs.size = digestLen alg) ∨
-    (∃ e w', ((Raw.Internal.mkRawOps ffi).digestRaw alg data) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  dsimp [Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM]
-  rw [io_bind_baseIO]
-  rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
-  dsimp only
-  by_cases hs : (status != 0) = true
-  · simp only [hs, ↓reduceIte]
-    exact Or.inr ⟨_, _, rfl, decodeShimError_ne_invalidHex status code detail⟩
-  · simp only [hs, Bool.false_eq_true, ↓reduceIte]
-    by_cases hlen : (bs.size != digestLen alg) = true
-    · simp only [hlen, ↓reduceIte]
-      exact Or.inr ⟨_, _, rfl, by simp [Raw.Internal.mapRawError]⟩
-    · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
-      have heq : bs.size = digestLen alg := by
-        cases hsz : (bs.size == digestLen alg)
-        · simp [bne, hsz] at hlen
-        · exact beq_iff_eq.mp hsz
-      exact Or.inl ⟨bs, _, rfl, heq⟩
+    exact ⟨hspec.1, ⟨hspec.2.1, hspec.2.2⟩, trivial⟩
 
 private theorem defaultOps_digestRaw_outcome (alg : HashAlg) (data : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (Raw.defaultOps.digestRaw alg data) w = .ok (.ok bs) w' ∧ bs.size = digestLen alg) ∨
-    (∃ e w', (Raw.defaultOps.digestRaw alg data) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  apply mkRawOps_digestRaw_outcome
-
-private theorem mkRawOps_hmacSha256Raw_outcome (ffi : Raw.CryptoHashFfiOps)
-    (key msg : ByteArray) (w : Void IO.RealWorld) :
-    (∃ bs w', ((Raw.Internal.mkRawOps ffi).hmacSha256Raw key msg) w = .ok (.ok bs) w' ∧ bs.size = 32) ∨
-    (∃ e w', ((Raw.Internal.mkRawOps ffi).hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  dsimp [Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM]
-  rw [io_bind_baseIO]
-  rcases hres : ((_ : BaseIO _) w).val with ⟨status, code, detail, bs⟩
-  dsimp only
-  by_cases hs : (status != 0) = true
-  · simp only [hs, ↓reduceIte]
-    exact Or.inr ⟨_, _, rfl, decodeShimError_ne_invalidHex status code detail⟩
-  · simp only [hs, Bool.false_eq_true, ↓reduceIte]
-    by_cases hlen : (bs.size != 32) = true
-    · simp only [hlen, ↓reduceIte]
-      exact Or.inr ⟨_, _, rfl, by simp [Raw.Internal.mapRawError]⟩
-    · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
-      have heq : bs.size = 32 := by
-        cases hsz : (bs.size == 32)
-        · simp [bne, hsz] at hlen
-        · exact beq_iff_eq.mp hsz
-      exact Or.inl ⟨bs, _, rfl, heq⟩
+    (∃ e w', (Raw.defaultOps.digestRaw alg data) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) :=
+  Raw.defaultOps_digestRaw_outcome alg data w
 
 private theorem defaultOps_hmacSha256Raw_outcome (key msg : ByteArray) (w : Void IO.RealWorld) :
     (∃ bs w', (Raw.defaultOps.hmacSha256Raw key msg) w = .ok (.ok bs) w' ∧ bs.size = 32) ∨
-    (∃ e w', (Raw.defaultOps.hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) := by
-  apply mkRawOps_hmacSha256Raw_outcome
-
-private theorem mkRawOps_ctEqualRaw_outcome (ffi : Raw.CryptoHashFfiOps)
-    (a b : ByteArray) (w : Void IO.RealWorld) :
-    (a.size ≠ b.size ∧ ∃ e w', ((Raw.Internal.mkRawOps ffi).ctEqualRaw a b) w = .ok (.error e) w' ∧ e.kind = .lengthMismatch) ∨
-    (a.size = b.size ∧ ∃ eq w', ((Raw.Internal.mkRawOps ffi).ctEqualRaw a b) w = .ok (.ok eq) w') := by
-  dsimp [Raw.Internal.mkRawOps, Raw.Internal.mkRawOpsM]
-  by_cases hne : (a.size != b.size) = true
-  · simp only [hne, ↓reduceIte]
-    exact Or.inl ⟨bne_iff_ne.mp hne, _, _, rfl, rfl⟩
-  · simp only [hne, Bool.false_eq_true, ↓reduceIte]
-    rw [io_bind_baseIO]
-    have heq : a.size = b.size := by
-      cases hsz : (a.size == b.size)
-      · simp [bne, hsz] at hne
-      · exact beq_iff_eq.mp hsz
-    exact Or.inr ⟨heq, _, _, rfl⟩
+    (∃ e w', (Raw.defaultOps.hmacSha256Raw key msg) w = .ok (.error e) w' ∧ e.kind ≠ .invalidHex) :=
+  Raw.defaultOps_hmacSha256Raw_outcome key msg w
 
 private theorem defaultOps_ctEqualRaw_outcome (a b : ByteArray) (w : Void IO.RealWorld) :
     (a.size ≠ b.size ∧ ∃ e w', (Raw.defaultOps.ctEqualRaw a b) w = .ok (.error e) w' ∧ e.kind = .lengthMismatch) ∨
-    (a.size = b.size ∧ ∃ eq w', (Raw.defaultOps.ctEqualRaw a b) w = .ok (.ok eq) w') := by
-  apply mkRawOps_ctEqualRaw_outcome
+    (a.size = b.size ∧ ∃ eq w', (Raw.defaultOps.ctEqualRaw a b) w = .ok (.ok eq) w') :=
+  Raw.defaultOps_ctEqualRaw_outcome a b w
 
 private theorem io_bind_eq {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.RealWorld) :
     (act >>= k) w =

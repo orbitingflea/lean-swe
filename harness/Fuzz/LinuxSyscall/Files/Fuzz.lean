@@ -3,7 +3,6 @@ import LeanSwe.LinuxSyscall.Files.Types
 import LeanSwe.LinuxSyscall.Files.Model
 import LeanSwe.LinuxSyscall.Files.Model.Seed
 import LeanSwe.LinuxSyscall.Files.Interface
-import LeanSwe.LinuxSyscall.Files.Impl
 import Fuzz.LinuxSyscall.Files.Strace
 import Fuzz.LinuxSyscall.Rng
 import Fuzz.LinuxSyscall.Env

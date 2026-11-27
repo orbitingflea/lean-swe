@@ -76,10 +76,10 @@ private def typoSpec : CommandSpec :=
 theorem allPass_parse_typoSuggestions : AllPass (test_cmdline_parse_typoSuggestions defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_typoSuggestions, Bind.bind, Pure.pure, NondetTest.assert]
   have h1 : ∃ e, defaultApi.parse typoSpec ["--verbos"] = .error e ∧ e.kind = .unknownOption ∧ e.message.contains "did you mean '--verbose'" = true := by
-    rcases parse_err_of_pred typoSpec ["--verbos"] (fun e => decide (e.kind = .unknownOption) && e.message.contains "did you mean '--verbose'") (by cbv) with ⟨e, he, hp⟩
+    rcases parse_err_of_pred typoSpec ["--verbos"] (fun e => decide (e.kind = .unknownOption) && e.message.contains "did you mean '--verbose'") (by dsimp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM]; cbv) with ⟨e, he, hp⟩
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hp; exact ⟨e, he, hp.1, hp.2⟩
   have h2 : ∃ e, defaultApi.parse typoSpec ["biuld"] = .error e ∧ e.kind = .unknownSubcommand ∧ e.message.contains "did you mean 'build'" = true := by
-    rcases parse_err_of_pred typoSpec ["biuld"] (fun e => decide (e.kind = .unknownSubcommand) && e.message.contains "did you mean 'build'") (by cbv) with ⟨e, he, hp⟩
+    rcases parse_err_of_pred typoSpec ["biuld"] (fun e => decide (e.kind = .unknownSubcommand) && e.message.contains "did you mean 'build'") (by dsimp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM]; cbv) with ⟨e, he, hp⟩
     simp only [Bool.and_eq_true, decide_eq_true_eq] at hp; exact ⟨e, he, hp.1, hp.2⟩
   rcases h1 with ⟨e1, he1, hk1, hm1⟩; rcases h2 with ⟨e2, he2, hk2, hm2⟩
   dsimp only [typoSpec] at he1 he2; rw [he1]; dsimp only; rw [he2]; exact ⟨⟨hk1, hm1⟩, ⟨hk2, hm2⟩, trivial⟩
@@ -136,7 +136,7 @@ private def toolHvSpec : CommandSpec :=
 /-- `test_cmdline_parse_helpAndVersionRouting` holds universally for `defaultApi`. -/
 theorem allPass_parse_helpAndVersionRouting : AllPass (test_cmdline_parse_helpAndVersionRouting defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_parse_helpAndVersionRouting, Bind.bind, Pure.pure, NondetTest.assert]
-  rcases parse_err_of_pred toolHvSpec ["--help", "--badopt"] (fun e => decide (e.kind = .helpRequested) && !e.message.isEmpty) (by cbv) with ⟨e4, he4, hp4⟩
+  rcases parse_err_of_pred toolHvSpec ["--help", "--badopt"] (fun e => decide (e.kind = .helpRequested) && !e.message.isEmpty) (by dsimp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM]; cbv) with ⟨e4, he4, hp4⟩
   dsimp only [toolHvSpec] at he4; simp only [decide_eq_true_eq, Bool.and_eq_true] at hp4
   simp only [defaultApi, Internal.mkApiFromCapsM, Internal.mkApiM, Internal.parse, Internal.parseWith, Shared.parseWithEnvM_eq_spec, Internal.parseWithEnvSpecM, Shared.isValidSpecTR_eq] at he4 ⊢
   have h1 : Model.isValidSpec { name := "app" } = true := by decide
@@ -160,7 +160,8 @@ private theorem renderHelp_tool_root_eq :
     defaultApi.renderHelp toolSpec [] =
       .ok (("Usage: " ++ "tool" ++ " [OPTIONS] <SUBCOMMAND>\n\nManage widgets\n\n") ++
         ("SUBCOMMANDS:\n  " ++ "add" ++ "    Add widget\n\n") ++ ("OPTIONS:\n    " ++ "--cfg" ++ " <VALUE>    Config file\n") ++
-        ("  -h, " ++ "--help" ++ "    Print help\n") ++ ("  -V, " ++ "--version" ++ "    Print version\n")) := by cbv
+        ("  -h, " ++ "--help" ++ "    Print help\n") ++ ("  -V, " ++ "--version" ++ "    Print version\n")) := by
+  change Internal.renderHelp toolSpec [] = _; cbv
 private theorem renderHelp_tool_add_eq :
     defaultApi.renderHelp toolSpec ["add"] =
       .ok (("Usage: " ++ "tool add" ++ " [OPTIONS] <") ++ ("widget" ++ ">\n\nAdd widget\n\nARGS:\n  <widget>    Widget name\n\n") ++
@@ -176,7 +177,8 @@ private theorem renderHelp_tool_add_eq :
   have h3 : String.intercalate "\n" (List.map (fun (a : ArgSpec) => let tag := if a.variadic then s!"<{a.name}...>" else s!"<{a.name}>"; if a.help.isEmpty then s!"  {tag}" else s!"  {tag}    {a.help}") [{ name := "widget", help := "Widget name" }]) = "  <widget>    Widget name" := by cbv
   rw [h1, h2, h3]; dsimp only [List.append, List.map]; cbv
 private theorem renderHelp_tool_missing_eq :
-    defaultApi.renderHelp toolSpec ["missing"] = .error { kind := .unknownSubcommand, message := "unknown subcommand 'missing'", target := some "missing" } := by cbv
+    defaultApi.renderHelp toolSpec ["missing"] = .error { kind := .unknownSubcommand, message := "unknown subcommand 'missing'", target := some "missing" } := by
+  change Internal.renderHelp toolSpec ["missing"] = _; cbv
 /-- `test_cmdline_renderHelpAndVersion` holds universally for `defaultApi`. -/
 theorem allPass_renderHelpAndVersion : AllPass (test_cmdline_renderHelpAndVersion defaultApi) := by
   dsimp only [AllPass, AllPassRun, test_cmdline_renderHelpAndVersion, Bind.bind, Pure.pure, NondetTest.assert]

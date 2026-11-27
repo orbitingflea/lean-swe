@@ -309,26 +309,44 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
   IO.FS.createDirAll baseDir
   let tcBytes ← IO.FS.readBinFile (realRepo / "lean-toolchain")
   let rootManRaw ← IO.FS.readFile (realRepo / "lake-manifest.json")
+  let proofsManRaw ← IO.FS.readFile (realRepo / "proofs" / "lake-manifest.json")
   let harnessManRaw ← IO.FS.readFile (realRepo / "harness" / "lake-manifest.json")
   let rootManJson ← match Lean.Json.parse rootManRaw with
     | .ok j => pure j
     | .error err => throw (IO.userError s!"failed to parse root lake-manifest.json: {err}")
+  let proofsManJson ← match Lean.Json.parse proofsManRaw with
+    | .ok j => pure j
+    | .error err => throw (IO.userError s!"failed to parse proofs/lake-manifest.json: {err}")
   let harnessManJson ← match Lean.Json.parse harnessManRaw with
     | .ok j => pure j
     | .error err => throw (IO.userError s!"failed to parse harness/lake-manifest.json: {err}")
-  let expectedInheritedCount ← match rootManJson.getObjVal? "packages" with
-    | .ok (.arr a) => pure a.size
-    | _ => throw (IO.userError "root lake-manifest.json missing 'packages' array")
+  let rootPkgName ← match rootManJson.getObjValAs? String "name" with
+    | .ok s => pure s
+    | _ => throw (IO.userError "root lake-manifest.json missing string 'name'")
+  let proofsPkgName ← match proofsManJson.getObjValAs? String "name" with
+    | .ok s => pure s
+    | _ => throw (IO.userError "proofs/lake-manifest.json missing string 'name'")
+  let isPathPkg (e : Lean.Json) : Bool :=
+    (e.getObjValAs? String "type").toOption == some "path"
+  let isNamedPkg (target : String) (e : Lean.Json) : Bool :=
+    (e.getObjValAs? String "name").toOption == some target
+  let expectedInheritedCount ← match proofsManJson.getObjVal? "packages" with
+    | .ok (.arr a) => pure (a.filter (!isPathPkg ·)).size
+    | _ => throw (IO.userError "proofs/lake-manifest.json missing 'packages' array")
   let initParityRepo (dir : System.FilePath) : IO Unit := do
+    IO.FS.createDirAll (dir / "proofs")
     IO.FS.createDirAll (dir / "harness")
     IO.FS.writeBinFile (dir / "lean-toolchain") tcBytes
+    IO.FS.writeBinFile (dir / "proofs" / "lean-toolchain") tcBytes
     IO.FS.writeBinFile (dir / "harness" / "lean-toolchain") tcBytes
     IO.FS.writeFile (dir / "lake-manifest.json") rootManRaw
+    IO.FS.writeFile (dir / "proofs" / "lake-manifest.json") proofsManRaw
     IO.FS.writeFile (dir / "harness" / "lake-manifest.json") harnessManRaw
     let gi ← runCmd "git" #["init", "-q"] (some dir)
     if gi.exitCode != 0 then
       throw (IO.userError s!"git init failed: {gi.stderr}")
     let ga ← runCmd "git" #["add", "lean-toolchain", "lake-manifest.json",
+      "proofs/lean-toolchain", "proofs/lake-manifest.json",
       "harness/lean-toolchain", "harness/lake-manifest.json"] (some dir)
     if ga.exitCode != 0 then
       throw (IO.userError s!"git add failed: {ga.stderr}")
@@ -359,8 +377,9 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     extra := extra.push 10
     IO.FS.writeBinFile (d / "harness" / "lean-toolchain") extra
   runParityMut "harness_toolchain_empty" "HARNESS_TOOLCHAIN_INVALID"
-      (forbiddenCodes := #["HARNESS_TOOLCHAIN_MISMATCH", "HARNESS_TOOLCHAIN_MISSING"]) fun d => do
+      (forbiddenCodes := #["HARNESS_TOOLCHAIN_MISMATCH", "HARNESS_TOOLCHAIN_MISSING", "PROOFS_TOOLCHAIN_MISMATCH", "PROOFS_TOOLCHAIN_MISSING"]) fun d => do
     IO.FS.writeBinFile (d / "lean-toolchain") ByteArray.empty
+    IO.FS.writeBinFile (d / "proofs" / "lean-toolchain") ByteArray.empty
     IO.FS.writeBinFile (d / "harness" / "lean-toolchain") ByteArray.empty
   runParityMut "harness_toolchain_missing" "HARNESS_TOOLCHAIN_MISSING" fun d => do
     IO.FS.removeFile (d / "harness" / "lean-toolchain")
@@ -412,21 +431,49 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
     let mutated ← appendManifestPkg harnessManJson "dup_harness_pkg" isInheritedPkg pure
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
-  runParityMut "root_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
+  runParityMut "proofs_manifest_duplicate_pkg" "HARNESS_MANIFEST_DUPLICATE_PACKAGE"
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
-    let mutated ← appendManifestPkg rootManJson "dup_root_pkg" (fun _ => true) pure
-    IO.FS.writeFile (d / "lake-manifest.json") mutated
+    let mutated ← appendManifestPkg proofsManJson "dup_proofs_pkg" (!isPathPkg ·) pure
+    IO.FS.writeFile (d / "proofs" / "lake-manifest.json") mutated
+  runParityMut "root_manifest_external_deps_forbidden" "ROOT_MANIFEST_EXTERNAL_DEPS_FORBIDDEN" fun d => do
+    let fakePkg := Lean.Json.mkObj [("name", .str "bogus"), ("type", .str "git")]
+    let updated ← setJsonObjField rootManJson "packages" (.arr #[fakePkg])
+    IO.FS.writeFile (d / "lake-manifest.json") updated.pretty
+  runParityMut "proofs_toolchain_mismatch" "PROOFS_TOOLCHAIN_MISMATCH" fun d => do
+    IO.FS.writeFile (d / "proofs" / "lean-toolchain") "leanprover/lean4:v0.0.0"
+  runParityMut "proofs_toolchain_missing" "PROOFS_TOOLCHAIN_MISSING" fun d => do
+    IO.FS.removeFile (d / "proofs" / "lean-toolchain")
+  runParityMut "proofs_manifest_missing" "PROOFS_MANIFEST_MISSING" fun d => do
+    IO.FS.removeFile (d / "proofs" / "lake-manifest.json")
+  runParityMut "proofs_manifest_packages_dir_drift" "PROOFS_MANIFEST_PACKAGES_DIR_MISMATCH" fun d => do
+    let updated ← setJsonObjField proofsManJson "packagesDir" (.str ".lake/packages")
+    IO.FS.writeFile (d / "proofs" / "lake-manifest.json") updated.pretty
+  runParityMut "proofs_manifest_root_dep_drift" "PROOFS_MANIFEST_ROOT_DEP_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg proofsManJson "proofs_root_dep_drift" (isNamedPkg rootPkgName) fun e =>
+      setJsonObjField e "dir" (.str "../drift")
+    IO.FS.writeFile (d / "proofs" / "lake-manifest.json") mutated
+  runParityMut "proofs_manifest_missing_root_dep" "PROOFS_MANIFEST_MISSING_ROOT_DEP" fun d => do
+    let mutated ← dropFirstManifestPkg proofsManJson "proofs_drop_root_dep" (isNamedPkg rootPkgName)
+    IO.FS.writeFile (d / "proofs" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_unexpected_direct_dep" "HARNESS_MANIFEST_UNEXPECTED_PACKAGE" fun d => do
     let mutated ← mapFirstManifestPkg harnessManJson "unexpected_direct_dep" isInheritedPkg fun e =>
       setJsonObjField e "inherited" (.bool false)
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_root_dep_drift" "HARNESS_MANIFEST_ROOT_DEP_MISMATCH" fun d => do
-    let mutated ← mapFirstManifestPkg harnessManJson "root_dep_drift" (fun e => !isInheritedPkg e) fun e =>
+    let mutated ← mapFirstManifestPkg harnessManJson "root_dep_drift" (isNamedPkg rootPkgName) fun e =>
       setJsonObjField e "dir" (.str "../drift")
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_missing_root_dep" "HARNESS_MANIFEST_MISSING_ROOT_DEP"
       (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
-    let mutated ← dropFirstManifestPkg harnessManJson "drop_root_dep" (fun e => !isInheritedPkg e)
+    let mutated ← dropFirstManifestPkg harnessManJson "drop_root_dep" (isNamedPkg rootPkgName)
+    IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
+  runParityMut "harness_manifest_proofs_dep_drift" "HARNESS_MANIFEST_PROOFS_DEP_MISMATCH" fun d => do
+    let mutated ← mapFirstManifestPkg harnessManJson "proofs_dep_drift" (isNamedPkg proofsPkgName) fun e =>
+      setJsonObjField e "dir" (.str "../drift")
+    IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
+  runParityMut "harness_manifest_missing_proofs_dep" "HARNESS_MANIFEST_MISSING_PROOFS_DEP"
+      (forbiddenCodes := #["HARNESS_MANIFEST_MISSING_PACKAGE", "HARNESS_MANIFEST_EXTRA_PACKAGE"]) fun d => do
+    let mutated ← dropFirstManifestPkg harnessManJson "drop_proofs_dep" (isNamedPkg proofsPkgName)
     IO.FS.writeFile (d / "harness" / "lake-manifest.json") mutated
   runParityMut "harness_manifest_missing" "HARNESS_MANIFEST_MISSING" fun d => do
     IO.FS.removeFile (d / "harness" / "lake-manifest.json")
@@ -931,6 +978,66 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     writeFileCreatingParents (rc / "LeanSwe/MiniB/Model.lean")
       "import LeanSwe.PostFork.Aeneas.Model.World\nimport LeanSwe.MiniB.Types\nnamespace LeanSwe.MiniB.Model\ndef evalB (_ : BTag) : Nat := LeanSwe.PostFork.Aeneas.Internal.World.worldVal\nend LeanSwe.MiniB.Model\n"
     return #["LeanSwe/PostFork/Types", "LeanSwe/PostFork/Aeneas/Model/World", "LeanSwe/MiniB/Model"]
+
+  runDagMut "types_imports_same_pkg_model"
+      "DAG_WITHIN_VIOLATION: LeanSwe.MiniA.Types (Types) transitively imports same-package LeanSwe.MiniA.Model (Model)"
+      (roots := "LeanSwe.MiniA.Types") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
+      "namespace LeanSwe.MiniA.Model\ndef mConst : Nat := 1\nend LeanSwe.MiniA.Model\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Types.lean")
+      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA\ndef tVal : Nat := Model.mConst\nend LeanSwe.MiniA\n"
+    return #["LeanSwe/MiniA/Model", "LeanSwe/MiniA/Types"]
+
+  runDagMut "impl_imports_same_pkg_model"
+      "DAG_WITHIN_VIOLATION: LeanSwe.MiniA.Impl (Impl) transitively imports same-package LeanSwe.MiniA.Model (Model)"
+      (roots := "LeanSwe.MiniA.Impl") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Impl.lean")
+      "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Internal\ndef stepImpl (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Internal\n"
+    return #["LeanSwe/MiniA/Impl"]
+
+  runDagMut "sysbridge_imports_same_pkg_model"
+      "DAG_WITHIN_VIOLATION: LeanSwe.MiniB.SysBridge (SysBridge) transitively imports same-package LeanSwe.MiniB.Model (Model)"
+      (roots := "LeanSwe.MiniB.SysBridge") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/SysBridge.lean")
+      "import LeanSwe.MiniA.Interface\nimport LeanSwe.MiniB.Types\nimport LeanSwe.MiniB.Model\nnamespace LeanSwe.MiniB.SysBridge\ndef runB (t : BTag) : Nat := Model.evalB t\nend LeanSwe.MiniB.SysBridge\n"
+    return #["LeanSwe/MiniB/SysBridge"]
+
+  runDagMut "iface_imports_same_pkg_model"
+      "DAG_WITHIN_VIOLATION: LeanSwe.MiniA.Interface (Interface) transitively imports same-package LeanSwe.MiniA.Model (Model)"
+      (roots := "LeanSwe.MiniA.Interface") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Interface.lean")
+      "import LeanSwe.MiniA.Impl\nimport LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA\ndef step (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA\n"
+    return #["LeanSwe/MiniA/Interface"]
+
+  runDagMut "types_trans_imports_cross_model"
+      "DAG_TRANS_LEAK: LeanSwe.MiniB.Types (Types) transitively imports cross-package LeanSwe.MiniA.Model (Model)"
+      (roots := "LeanSwe.MiniB.Types") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/Types.lean")
+      "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniB\nabbrev BTag := LeanSwe.MiniA.Tag\ndef bVal (t : BTag) : Nat := LeanSwe.MiniA.Model.step t\nend LeanSwe.MiniB\n"
+    return #["LeanSwe/MiniB/Types"]
+
+  runDagMut "impl_trans_imports_cross_model"
+      "DAG_TRANS_LEAK: LeanSwe.MiniB.Impl (Impl) transitively imports cross-package LeanSwe.MiniA.Model (Model)"
+      (roots := "LeanSwe.MiniB.Impl") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/Impl.lean")
+      "import LeanSwe.MiniB.SysBridge\nimport LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniB.Internal\ndef implB (t : BTag) : Nat := LeanSwe.MiniA.Model.step t\nend LeanSwe.MiniB.Internal\n"
+    return #["LeanSwe/MiniB/Impl"]
+
+  runDagMut "proofs_cross_impl_reachin"
+      "DAG_CROSS_REACHIN_VIOLATION: LeanSwe.MiniB.Proofs (Proofs) reaches into cross-package LeanSwe.MiniA.Impl (Impl)"
+      (roots := "LeanSwe.MiniB.Proofs") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/Proofs.lean")
+      "import Core.Obeys\nimport LeanSwe.MiniB.Model\nimport LeanSwe.MiniB.Interface\nnamespace LeanSwe.MiniB.Proofs\ntheorem leak_impl (t : BTag) : LeanSwe.MiniA.Internal.stepImpl t = LeanSwe.MiniA.Model.step t := by cases t <;> rfl\nend LeanSwe.MiniB.Proofs\n"
+    return #["LeanSwe/MiniB/Proofs"]
+
+  runDagMut "proofs_cross_internal_reachin"
+      "DAG_CROSS_INTERNAL_REACHIN: LeanSwe.MiniB.Proofs (Proofs) references cross-package internal constant LeanSwe.MiniA.Internal.ifaceHelper in LeanSwe.MiniA.Interface"
+      (roots := "LeanSwe.MiniB.Proofs") fun rc => do
+    writeFileCreatingParents (rc / "LeanSwe/MiniA/Interface.lean")
+      "import LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA\ndef Internal.ifaceHelper (t : Tag) : Nat := Internal.stepImpl t\ndef step (t : Tag) : Nat := Internal.ifaceHelper t\nend LeanSwe.MiniA\n"
+    writeFileCreatingParents (rc / "LeanSwe/MiniB/Proofs.lean")
+      "import Core.Obeys\nimport LeanSwe.MiniB.Model\nimport LeanSwe.MiniB.Interface\nnamespace LeanSwe.MiniB.Proofs\ntheorem leak_internal (t : BTag) : LeanSwe.MiniA.Internal.ifaceHelper t = LeanSwe.MiniA.Model.step t := by cases t <;> rfl\nend LeanSwe.MiniB.Proofs\n"
+    return #["LeanSwe/MiniA/Interface", "LeanSwe/MiniB/SysBridge", "LeanSwe/MiniB/Impl", "LeanSwe/MiniB/Interface", "LeanSwe/MiniB/Proofs"]
 
   IO.FS.removeDirAll baseDir
 

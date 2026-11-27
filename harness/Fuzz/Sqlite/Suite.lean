@@ -1,6 +1,5 @@
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.Raw.Interface
-import LeanSwe.Sqlite.Raw.SpecTests
 import LeanSwe.Sqlite.Model
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
@@ -2327,8 +2326,87 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
   if dbs != 0 || stmts != 0 then
     throw (IO.userError s!"SQLITE_RAW_PROBE_LEAK dbs={dbs} stmts={stmts}")
 
+private inductive MockFaultStep where
+  | openV2 (err : Raw.SqliteRawError)
+  | close (err : Raw.SqliteRawError)
+  | prepareV2 (err : Raw.SqliteRawError)
+  | bindAt1 (err : Raw.SqliteRawError)
+  | step (err : Raw.SqliteRawError)
+  | finalizeSticky (err : Raw.SqliteRawError)
+
+private structure MockRawCState where
+  table : Raw.RawHandleTable := {}
+  expectedBindParams : UInt32 := 0
+  fault : MockFaultStep
+
+private def mockFaultCOps : Raw.CSqliteOpsM (StateM MockRawCState) :=
+  { modifyTable := fun f s =>
+      let (a, t') := f s.table
+      (a, { s with table := t' })
+    openV2 := fun _ _ s =>
+      match s.fault with
+      | .openV2 err => (.error err, s)
+      | _ => (.ok (.mock 100), s)
+    close := fun _ s =>
+      match s.fault with
+      | .close err => (.error err, s)
+      | _ => (.ok (), s)
+    extendedResultCodes := fun _ _ s => (.ok (), s)
+    busyTimeout := fun _ _ s => (.ok (), s)
+    prepareV2 := fun _ _ s =>
+      match s.fault with
+      | .prepareV2 err => (.error err, s)
+      | _ => (.ok (none, 0), s)
+    step := fun _ s =>
+      match s.fault with
+      | .step err => (.error err, s)
+      | _ => (.ok .done, s)
+    reset := fun _ s => (.ok (), s)
+    clearBindings := fun _ s => (.ok (), s)
+    finalize := fun _ s =>
+      match s.fault with
+      | .finalizeSticky err => (.finalized (some err), s)
+      | _ => (.finalized none, s)
+    bindParamCount := fun _ s => (.ok s.expectedBindParams, s)
+    bindNull := fun _ idx s =>
+      match s.fault with
+      | .bindAt1 err => if idx == 1 then (.error err, s) else (.ok (), s)
+      | _ => (.ok (), s)
+    bindInt64 := fun _ idx _ s =>
+      match s.fault with
+      | .bindAt1 err => if idx == 1 then (.error err, s) else (.ok (), s)
+      | _ => (.ok (), s)
+    bindDouble := fun _ idx _ s =>
+      match s.fault with
+      | .bindAt1 err => if idx == 1 then (.error err, s) else (.ok (), s)
+      | _ => (.ok (), s)
+    bindText := fun _ idx _ s =>
+      match s.fault with
+      | .bindAt1 err => if idx == 1 then (.error err, s) else (.ok (), s)
+      | _ => (.ok (), s)
+    bindBlob := fun _ idx _ s =>
+      match s.fault with
+      | .bindAt1 err => if idx == 1 then (.error err, s) else (.ok (), s)
+      | _ => (.ok (), s)
+    columnCount := fun _ s => (.ok 0, s)
+    columnType := fun _ _ s => (.ok 5, s)
+    columnInt64 := fun _ _ s => (.ok 0, s)
+    columnDouble := fun _ _ s => (.ok 0.0, s)
+    columnTextBytes := fun _ _ s => (.ok ByteArray.empty, s)
+    columnBlob := fun _ _ s => (.ok ByteArray.empty, s) }
+
+private def mockStateWithOpenDb (fault : MockFaultStep) : MockRawCState :=
+  { table := { nextDbId := 2, nextStmtId := 1, dbs := [(1, .mock 100)], stmts := [] }
+    fault := fault }
+
+private def mockStateWithOpenStmt (expectedParams : UInt32) (fault : MockFaultStep) : MockRawCState :=
+  let sh : Raw.StmtHandle := { id := 1, dbId := 1 }
+  { table := { nextDbId := 2, nextStmtId := 2, dbs := [(1, .mock 100)], stmts := [(sh, .mock 200)] }
+    expectedBindParams := expectedParams
+    fault := fault }
+
 private def runMockedRawErrorProbes : IO Unit := do
-  let ops := Raw.Internal.mkRawOps Raw.mockCOps
+  let ops := Raw.Internal.mkRawOps mockFaultCOps
   let rawErrs : Array (SqliteErrorKind × Raw.SqliteRawError) := #[
     (.notFound, .cantOpen (some "mock.db") 14 "mock notFound"),
     (.busy, .busy 5 "mock busy"),
@@ -2348,12 +2426,12 @@ private def runMockedRawErrorProbes : IO Unit := do
       throw (IO.userError s!"SQLITE_MOCK_PROBE_UNEXPECTED_OK: {opName} expected {repr expected}")
   let stmtHandle : Raw.StmtHandle := { id := 1, dbId := 1 }
   for (expected, rawErr) in rawErrs do
-    check "openDb" expected ((ops.openDb "app.db" {}).run { failStep := .openV2 rawErr }).1
-    check "closeDb" expected ((ops.closeDb { id := 1 }).run (Raw.mockStateWithOpenDb (.close rawErr))).1
-    check "prepare" expected ((ops.prepare { id := 1 } "SELECT 1").run (Raw.mockStateWithOpenDb (.prepareV2At 0 rawErr))).1
-    check "bind" expected ((ops.bind stmtHandle #[.int 1]).run (Raw.mockStateWithOpenStmt 1 [] #[] (.bindAt 1 rawErr))).1
-    check "step" expected ((ops.step stmtHandle).run (Raw.mockStateWithOpenStmt 0 [] #[] (.stepAt 0 rawErr))).1
-    check "finalize" expected ((ops.finalize stmtHandle).run (Raw.mockStateWithOpenStmt 0 [] #[] (.finalizeResult (.finalized (some rawErr))))).1
+    check "openDb" expected ((ops.openDb "app.db" {}).run { fault := .openV2 rawErr }).1
+    check "closeDb" expected ((ops.closeDb { id := 1 }).run (mockStateWithOpenDb (.close rawErr))).1
+    check "prepare" expected ((ops.prepare { id := 1 } "SELECT 1").run (mockStateWithOpenDb (.prepareV2 rawErr))).1
+    check "bind" expected ((ops.bind stmtHandle #[.int 1]).run (mockStateWithOpenStmt 1 (.bindAt1 rawErr))).1
+    check "step" expected ((ops.step stmtHandle).run (mockStateWithOpenStmt 0 (.step rawErr))).1
+    check "finalize" expected ((ops.finalize stmtHandle).run (mockStateWithOpenStmt 0 (.finalizeSticky rawErr))).1
 
 private def runWarmup (tpl : EpisodeTemplate) (rootDir : System.FilePath) (attemptRef : IO.Ref Nat)
     (tracker : CoverageTracker) : IO (CoverageTracker × Nat) := do

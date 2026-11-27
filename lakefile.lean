@@ -15,66 +15,41 @@ package «lean-swe» where
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
-require «aeneas» from git
-  "https://github.com/AeneasVerif/aeneas.git" @ "0d21a9ec7bbbb110110cacc14464a47fd71c8705" / "backends/lean"
-
 @[default_target]
 lean_lib Core where
   globs := #[.submodules `Core]
 
-@[default_target]
-lean_lib LeanSwe where
-  globs := #[
-    .one `LeanSwe,
-    .submodules `LeanSwe.Base64,
-    .submodules `LeanSwe.CmdLine,
-    .submodules `LeanSwe.Compress,
-    .submodules `LeanSwe.CryptoHash,
-    .submodules `LeanSwe.EnvVars,
-    .submodules `LeanSwe.Fs,
-    .submodules `LeanSwe.Git,
-    .submodules `LeanSwe.Glob,
-    .submodules `LeanSwe.Json,
-    .submodules `LeanSwe.LinuxSyscall,
-    .submodules `LeanSwe.NumParse,
-    .one `LeanSwe.PostFork.Types,
-    .one `LeanSwe.PostFork.Types.Internal,
-    .one `LeanSwe.PostFork.Model,
-    .one `LeanSwe.PostFork.Interface,
-    .one `LeanSwe.PostFork.Impl,
-    .one `LeanSwe.PostFork.SpecTests,
-    .one `LeanSwe.PostFork.SpecMutants,
-    .andSubmodules `LeanSwe.PostFork.Proofs,
-    .one `LeanSwe.PostFork.Verified,
-    .andSubmodules `LeanSwe.PostFork.Aeneas.Model,
-    .one `LeanSwe.PostFork.Aeneas.Api,
-    .submodules `LeanSwe.Process,
-    .submodules `LeanSwe.ProcessSandbox,
-    .submodules `LeanSwe.RegExp,
-    .submodules `LeanSwe.SlotPool,
-    .submodules `LeanSwe.Sqlite,
-    .submodules `LeanSwe.Tar,
-    .submodules `LeanSwe.TempDir,
-    .submodules `LeanSwe.Time,
-    .submodules `LeanSwe.Toml,
-    .submodules `LeanSwe.Uuid
-  ]
+private partial def collectL1LeanMods (dir : System.FilePath) (pfx : Lean.Name) : IO (Array Lean.Name) := do
+  if !(← dir.isDir) then
+    return #[]
+  let entries ← dir.readDir
+  let sorted := entries.qsort fun a b => a.fileName < b.fileName
+  let mut out : Array Lean.Name := #[]
+  for entry in sorted do
+    if ← entry.path.isDir then
+      out := out ++ (← collectL1LeanMods entry.path (pfx.str entry.fileName))
+    else if entry.path.extension == some "lean" then
+      let stem := (entry.path.withExtension "").fileName.getD ""
+      if !stem.isEmpty then
+        out := out.push (pfx.str stem)
+  return out
+
+private unsafe def l1SubModsUnsafe (_ : Unit) : Array Lean.Name :=
+  match unsafeIO (collectL1LeanMods (__dir__ / "LeanSwe") `LeanSwe) with
+  | .ok mods => mods
+  | .error _ => #[]
+
+@[implemented_by l1SubModsUnsafe]
+private def getL1SubMods (_ : Unit) : Array Lean.Name :=
+  #[]
+
+private def l1SubMods : Array Lean.Name :=
+  getL1SubMods ()
 
 @[default_target]
-lean_lib «LeanSwe.PostFork.AeneasGen» where
-  roots := #[
-    `LeanSwe.PostFork.Aeneas.TypesExternal,
-    `LeanSwe.PostFork.Aeneas.Types,
-    `LeanSwe.PostFork.Aeneas.FunsExternal,
-    `LeanSwe.PostFork.Aeneas.Funs
-  ]
-  globs := #[
-    .one `LeanSwe.PostFork.Aeneas.TypesExternal,
-    .one `LeanSwe.PostFork.Aeneas.Types,
-    .one `LeanSwe.PostFork.Aeneas.FunsExternal,
-    .one `LeanSwe.PostFork.Aeneas.Funs
-  ]
-  leanOptions := #[⟨`weak.linter.missingDocs, false⟩]
+lean_lib LeanSwe where
+  roots := l1SubMods
+  globs := (#[`LeanSwe] ++ l1SubMods).map Glob.one
 
 private def buildFdBoxObj (pkg : NPackage __name__) (tag : String) : FetchM (Job System.FilePath) := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"

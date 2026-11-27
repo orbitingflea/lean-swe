@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json') }}
+          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
 
       - name: Restore build folder cache
         id: lake-cache
@@ -72,6 +72,7 @@ jobs:
         with:
           path: |
             ./.lake/build
+            ./proofs/.lake/build
             ./harness/.lake/build
           key: lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-${{ github.sha }}
           restore-keys: |
@@ -82,7 +83,11 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
-          for lib, base, roots in ((Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz")), (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "ModelMutants"))):
+          for lib, base, roots in (
+              (Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz")),
+              (Path("proofs/.lake/build/lib/lean"), Path("proofs"), ("LeanSwe",)),
+              (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "ModelMutants", "UnitTests")),
+          ):
               for r in roots:
                   if not (lr := lib / r).exists(): continue
                   for o in list(lr.rglob("*.olean")):
@@ -132,18 +137,47 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pf-regen"
           (cd LeanSwe/PostFork/rust && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
           aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
-          diff -u LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
-          diff -u LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
+          diff -u proofs/LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
+          diff -u proofs/LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
 
       - name: Run sandboxed lake check
         id: lake_check
         if: steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.check_imports.outcome == 'success'
         run: |
           set -euo pipefail
-          lake exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
+          lake -d proofs exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake build --wfail LeanSwe.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail LeanSwe.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          MERGED_OLEAN_DIR="$(mktemp -d "$RUNNER_TEMP/merged-olean.XXXXXX")"
+          PROOFS_EXPORT_FILE="$(mktemp "$RUNNER_TEMP/proofs-export.XXXXXX.ndjson")"
+          trap 'rm -rf "$MERGED_OLEAN_DIR" "$PROOFS_EXPORT_FILE"' EXIT
+          python3 -B - "$MERGED_OLEAN_DIR" <<'PY'
+          import pathlib, sys
+          merged = pathlib.Path(sys.argv[1])
+          seen: dict[pathlib.Path, pathlib.Path] = {}
+          for src_root in (pathlib.Path("proofs/.lake/build/lib/lean").resolve(), pathlib.Path(".lake/build/lib/lean").resolve()):
+              for p in sorted(src_root.rglob("*")):
+                  if p.is_dir():
+                      continue
+                  if not (p.name.endswith(".olean") or p.name.endswith(".olean.server") or p.name.endswith(".olean.private")):
+                      continue
+                  rel = p.relative_to(src_root)
+                  if rel in seen:
+                      print(f"DUPLICATE_MODULE_OLEAN: {rel} exists in both {seen[rel]} and {p}", file=sys.stderr)
+                      sys.exit(2)
+                  seen[rel] = p
+                  dst = merged / rel
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  dst.symlink_to(p)
+          PY
+          PROOFS_LEAN_PATH="$MERGED_OLEAN_DIR:$(lake -d proofs env printenv LEAN_PATH)"
+          LEAN_PREFIX="$(lean --print-prefix)"
+          LEAN_PATH="$PROOFS_LEAN_PATH" "$LEAN_PREFIX/bin/leanexport" LeanSweProofs LeanSwe.PostFork.Verified > "$PROOFS_EXPORT_FILE"
+          lake -d proofs check --from-export="$PROOFS_EXPORT_FILE" 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
+          rm -rf "$MERGED_OLEAN_DIR" "$PROOFS_EXPORT_FILE"
+          trap - EXIT
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants UnitTests leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
           expected_syms=$(printf '%s\n' __errno_location _exit chdir close dup2 execve fcntl open read setpgid syscall write | sort -u)
           expected_c_syms=$(printf '%s\n' leanswe_postfork_host_close_fd leanswe_postfork_host_fork_run leanswe_postfork_host_pipe_cloexec leanswe_postfork_host_probe_fd leanswe_postfork_host_probe_handle leanswe_postfork_host_read_once leanswe_postfork_host_setpgid leanswe_postfork_host_wait_once leanswe_postfork_host_write_once | sort -u)
@@ -164,7 +198,7 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ./.lake/packages
-          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json') }}
+          key: lake-pkgs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain', './lake-manifest.json', './proofs/lake-manifest.json') }}
 
       - name: Save build folder cache
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.lake-cache.outputs.cache-hit != 'true' && steps.lake_check.outcome == 'success' }}
@@ -172,6 +206,7 @@ jobs:
         with:
           path: |
             ./.lake/build
+            ./proofs/.lake/build
             ./harness/.lake/build
           key: lake-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('./lean-toolchain') }}-${{ github.sha }}
 
@@ -180,8 +215,8 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
         run: |
           set -euo pipefail
-          if [[ ! -f .lake/build/lib/lean/LeanSwe.olean ]]; then
-            echo "Skipping check_proof_memory.py because lake check did not produce LeanSwe.olean" | tee "$RUNNER_TEMP/mem_check.log"
+          if [[ ! -f .lake/build/lib/lean/LeanSwe.olean || ! -f proofs/.lake/build/lib/lean/LeanSweProofs.olean ]]; then
+            echo "Skipping check_proof_memory.py because lake check did not produce LeanSwe.olean and proofs/.lake/build/lib/lean/LeanSweProofs.olean" | tee "$RUNNER_TEMP/mem_check.log"
             exit 1
           fi
           LAKE_NO_CACHE=true python3 -B scripts/check_proof_memory.py --jobs "$LEAN_JOBS" 2>&1 | tee "$RUNNER_TEMP/mem_check.log"
@@ -190,19 +225,19 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' && steps.mem_check.outcome == 'success' }}
         run: |
           set -euo pipefail
-          lake env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean .
+          lake -d proofs env lean -DwarningAsError=true --run scripts/CheckPromises.lean .lake/build/lib/lean .
 
       - name: Check assumptions self-tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
         run: |
           set -euo pipefail
-          lake env lean -DwarningAsError=true --run scripts/CheckAssumptionsTest.lean
+          lake -d proofs env lean -DwarningAsError=true --run scripts/CheckAssumptionsTest.lean
 
       - name: Check non-Lean thinness gate
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.lake_check.outcome == 'success' }}
         run: |
           set -euo pipefail
-          lake env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
+          lake -d proofs env lean -DwarningAsError=true --run scripts/CheckForeignThinness.lean .
           python3 -B -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Run differential fuzz suites
@@ -381,7 +416,7 @@ jobs:
           set -euo pipefail
           [[ -s "$RUNNER_TEMP/daily.nonce" ]] || { echo "ERROR: missing $RUNNER_TEMP/daily.nonce" >&2; exit 1; }
           DAILY_NONCE=$(< "$RUNNER_TEMP/daily.nonce"); FUZZ_COV_DIR="$RUNNER_TEMP/fuzz-cov"
-          lake env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --nonce "$DAILY_NONCE" --require-fuzz-equiv --coverage-log "$FUZZ_COV_DIR/sandbox.log" --coverage-log "$FUZZ_COV_DIR/timerand.log" --coverage-log "$FUZZ_COV_DIR/other.log" --coverage-log "$FUZZ_COV_DIR/poll.log" --coverage-log "$FUZZ_COV_DIR/net.log" --coverage-log "$FUZZ_COV_DIR/process.log" --coverage-log "$FUZZ_COV_DIR/files.log" 2>&1 | tee "$RUNNER_TEMP/verify_fuzz_cov.log"
+          lake -d proofs env lean -DwarningAsError=true --run scripts/CheckAssumptions.lean --nonce "$DAILY_NONCE" --require-fuzz-equiv --coverage-log "$FUZZ_COV_DIR/sandbox.log" --coverage-log "$FUZZ_COV_DIR/timerand.log" --coverage-log "$FUZZ_COV_DIR/other.log" --coverage-log "$FUZZ_COV_DIR/poll.log" --coverage-log "$FUZZ_COV_DIR/net.log" --coverage-log "$FUZZ_COV_DIR/process.log" --coverage-log "$FUZZ_COV_DIR/files.log" 2>&1 | tee "$RUNNER_TEMP/verify_fuzz_cov.log"
 
       - name: Open deduplicated GitHub issue on failure
         if: ${{ failure() && !cancelled() && github.ref == 'refs/heads/main' }}

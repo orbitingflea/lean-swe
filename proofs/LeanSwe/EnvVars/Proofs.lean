@@ -94,124 +94,19 @@ private theorem io_bind_ok {α β : Type} (act : IO α) (k : α → IO β) (w : 
 private theorem io_pure_eq {α : Type} (a : α) (w : Void IO.RealWorld) :
     (pure a : IO α) w = EST.Out.ok a w := rfl
 
-private theorem baseIO_liftM_never_throws {α : Type} (act : BaseIO α) (w : Void IO.RealWorld) :
-    ∃ a w', (liftM act : IO α) w = .ok a w' := by
-  simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO]
-  cases act w with
-  | mk a s => exact ⟨a, s, rfl⟩
-
-private theorem io_bind_baseIO {α β : Type} (act : BaseIO α) (k : α → IO β) (w : Void IO.RealWorld) :
-    ((liftM act : IO α) >>= k) w = k (act w).val (act w).state := by
-  rcases baseIO_liftM_never_throws act w with ⟨v, w', hv⟩
-  have hst : act w = .mk v w' := by
-    simp only [liftM, monadLift, MonadLiftT.monadLift, MonadLift.monadLift, BaseIO.toEIO] at hv
-    cases h : act w with
-    | mk a s =>
-      rw [h] at hv
-      have ha : a = v := by injection hv
-      have hs : s = w' := by injection hv
-      subst ha hs
-      rfl
-  rw [hst]
-  have hbind : ((liftM act : IO α) >>= k) w =
-      match (liftM act : IO α) w with
-      | EST.Out.ok a s => k a s
-      | EST.Out.error e s => EST.Out.error e s := rfl
-  rw [hbind, hv]
-
-private theorem decodeEnvironAcc_err_invalidEncoding
-    (accRev : List (String × String)) (entries : List ByteArray) (err : EnvVarsRawError)
-    (h : Raw.Internal.decodeEnvironAcc accRev entries = .error err) :
-    ∃ key? detail, err = .invalidEncoding key? detail := by
-  induction entries generalizing accRev with
-  | nil => simp [Raw.Internal.decodeEnvironAcc] at h
-  | cons entry rest ih =>
-    unfold Raw.Internal.decodeEnvironAcc at h
-    cases hs : Raw.Internal.splitFirstEqBytes entry with
-    | none =>
-      rw [hs] at h
-      exact ih accRev h
-    | some kv =>
-      rcases kv with ⟨kBytes, vBytes⟩
-      rw [hs] at h
-      dsimp only at h
-      cases hk : String.fromUTF8? kBytes with
-      | none =>
-        rw [hk] at h
-        injection h with he
-        exact ⟨none, _, he.symm⟩
-      | some k =>
-        rw [hk] at h
-        dsimp only at h
-        cases hv : String.fromUTF8? vBytes with
-        | none =>
-          rw [hv] at h
-          injection h with he
-          exact ⟨some k, _, he.symm⟩
-        | some v =>
-          rw [hv] at h
-          exact ih ((k, v) :: accRev) h
-
-private theorem mkRawOps_getEnv_res
-    (g : String → BaseIO (Option ByteArray)) (l : BaseIO (Array ByteArray))
-    (key : String) (w : Void IO.RealWorld) :
-    (∃ a w', (Raw.Internal.mkRawOps (m := IO) {
-        getEnvBytes := fun k => liftM (g k)
-        listEnvironBytes := liftM l
-      }).getEnv key w = EST.Out.ok (Except.ok a) w') ∨
-    (∃ key? detail w', (Raw.Internal.mkRawOps (m := IO) {
-        getEnvBytes := fun k => liftM (g k)
-        listEnvironBytes := liftM l
-      }).getEnv key w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
-  dsimp only [Raw.Internal.mkRawOps]
-  by_cases hk : Raw.Internal.isValidPosixKey key
-  · simp only [hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    rw [io_bind_baseIO]
-    cases (g key w).val with
-    | none => exact Or.inl ⟨none, _, rfl⟩
-    | some bs =>
-      dsimp only
-      cases hutf : String.fromUTF8? bs with
-      | some s => dsimp only; exact Or.inl ⟨some s, _, rfl⟩
-      | none => dsimp only; exact Or.inr ⟨some key, _, _, rfl⟩
-  · simp only [hk, Bool.not_false, ↓reduceIte]
-    exact Or.inl ⟨none, w, rfl⟩
-
 private theorem raw_getEnv_res (key : String) (w : Void IO.RealWorld) :
     (∃ a w', Raw.defaultOps.getEnv key w = EST.Out.ok (Except.ok a) w') ∨
-    (∃ key? detail w', Raw.defaultOps.getEnv key w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
-  apply mkRawOps_getEnv_res
-
-private theorem mkRawOps_listEnv_res
-    (g : String → BaseIO (Option ByteArray)) (l : BaseIO (Array ByteArray))
-    (w : Void IO.RealWorld) :
-    (∃ a w', (Raw.Internal.mkRawOps (m := IO) {
-        getEnvBytes := fun k => liftM (g k)
-        listEnvironBytes := liftM l
-      }).listEnv w = EST.Out.ok (Except.ok a) w') ∨
-    (∃ key? detail w', (Raw.Internal.mkRawOps (m := IO) {
-        getEnvBytes := fun k => liftM (g k)
-        listEnvironBytes := liftM l
-      }).listEnv w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
-  dsimp only [Raw.Internal.mkRawOps]
-  rw [io_bind_baseIO]
-  cases hd : Raw.Internal.decodeEnvironAcc [] (l w).val.toList with
-  | ok xs =>
-    simp only [Except.map]
-    exact Or.inl ⟨xs.toArray, _, rfl⟩
-  | error err =>
-    rcases decodeEnvironAcc_err_invalidEncoding [] (l w).val.toList err hd with ⟨k?, d, rfl⟩
-    simp only [Except.map]
-    exact Or.inr ⟨k?, d, _, rfl⟩
+    (∃ key? detail w', Raw.defaultOps.getEnv key w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') :=
+  Raw.defaultOps_getEnv_res key w
 
 private theorem raw_listEnv_res (w : Void IO.RealWorld) :
     (∃ a w', Raw.defaultOps.listEnv w = EST.Out.ok (Except.ok a) w') ∨
-    (∃ key? detail w', Raw.defaultOps.listEnv w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') := by
-  apply mkRawOps_listEnv_res
+    (∃ key? detail w', Raw.defaultOps.listEnv w = EST.Out.ok (Except.error (.invalidEncoding key? detail)) w') :=
+  Raw.defaultOps_listEnv_res w
 
 private theorem mapRawError_invalidEncoding_kind (key? : Option String) (detail : String) :
-    (Raw.defaultOps.mapRawError (.invalidEncoding key? detail)).kind = .invalidEncoding := by
-  simp [Raw.defaultOps, Raw.Internal.mkRawOps, Raw.Internal.mapRawError]
+    (Raw.defaultOps.mapRawError (.invalidEncoding key? detail)).kind = .invalidEncoding :=
+  Raw.defaultOps_mapRawError_invalidEncoding_kind key? detail
 
 private theorem envvars_getEnv_never_of (f : Raw.EnvVarsErrorKind)
     (hf1 : f ≠ .invalidKey) (hf2 : f ≠ .invalidEncoding)

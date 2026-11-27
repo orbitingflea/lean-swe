@@ -16,6 +16,7 @@ package «lean-swe-harness» where
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
+require «lean-swe-proofs» from "../proofs"
 require «lean-swe» from ".."
 
 @[default_target]
@@ -25,6 +26,10 @@ lean_lib Fuzz where
 @[default_target]
 lean_lib ModelMutants where
   globs := #[.submodules `ModelMutants]
+
+@[default_target]
+lean_lib UnitTests where
+  globs := #[.one `UnitTests, .submodules `UnitTests]
 
 private def rootLeanSwePkg : FetchM Package := do
   let some pkg ← findPackageByName? `«lean-swe»

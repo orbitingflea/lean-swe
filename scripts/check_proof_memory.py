@@ -45,9 +45,13 @@ def load_default_limit_mb(repo_root: Path) -> float:
 
 
 def load_lake_env(repo_root: Path) -> dict[str, str]:
-    """Capture environment variables from lake env without relying on external tools."""
+    """Capture environment variables from lake env (including proofs/ when present)."""
+    cmd = ["lake"]
+    if (repo_root / "proofs" / "lakefile.lean").is_file():
+        cmd.extend(["-d", "proofs"])
+    cmd.extend(["env", "python3", "-c", "import json, os; print(json.dumps(dict(os.environ)))"])
     raw = subprocess.check_output(
-        ["lake", "env", "python3", "-c", "import json, os; print(json.dumps(dict(os.environ)))"],
+        cmd,
         cwd=repo_root,
         text=True,
     )
@@ -65,10 +69,10 @@ def discover_lean_files(repo_root: Path) -> list[str]:
         files = [line.strip() for line in out.splitlines() if line.strip()]
     except (subprocess.CalledProcessError, FileNotFoundError):
         files = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*.lean") if not p.is_symlink()]
-    excluded_prefixes = (".lake/", "build/", "harness/.lake/", "harness/build/")
+    excluded_prefixes = (".lake/", "build/", "proofs/.lake/", "proofs/build/", "harness/.lake/", "harness/build/")
     return sorted(
         f for f in files
-        if f not in ("lakefile.lean", "harness/lakefile.lean")
+        if f not in ("lakefile.lean", "proofs/lakefile.lean", "harness/lakefile.lean")
         and not any(f.startswith(pfx) for pfx in excluded_prefixes)
         and not (repo_root / f).is_symlink()
     )
@@ -144,8 +148,15 @@ def parse_lean_imports(file_path: Path) -> list[str]:
 def expand_with_revdeps(repo_root: Path, target_files: list[str]) -> list[str]:
     """Expand target_files with all transitive reverse-import dependents in the repo."""
     all_files = discover_lean_files(repo_root)
+    def _strip_pkg_prefix(path: str) -> str:
+        if path.startswith("harness/"):
+            return path[8:]
+        if path.startswith("proofs/"):
+            return path[7:]
+        return path
+
     mod_to_file = {
-        ((f[8:] if f.startswith("harness/") else f)[:-5] if f.endswith(".lean") else f).replace("/", "."): f
+        (_strip_pkg_prefix(f)[:-5] if f.endswith(".lean") else _strip_pkg_prefix(f)).replace("/", "."): f
         for f in all_files
     }
     rev_deps: dict[str, list[str]] = {f: [] for f in all_files}
@@ -341,12 +352,40 @@ def main(argv: list[str] | None = None) -> int:
 
     env = load_lake_env(repo_root)
     env["LEAN_NUM_THREADS"] = "1"
+    merged_ctx = None
+    l1_lib = repo_root / ".lake" / "build" / "lib" / "lean"
+    l2_lib = repo_root / "proofs" / ".lake" / "build" / "lib" / "lean"
+    if (repo_root / "proofs" / "LeanSwe").is_dir() and l1_lib.is_dir() and l2_lib.is_dir():
+        import tempfile
+        merged_ctx = tempfile.TemporaryDirectory(prefix="leanswe-mem-olean-")
+        merged_root = Path(merged_ctx.name)
+        seen: dict[Path, Path] = {}
+        for src_dir in (l2_lib.resolve(), l1_lib.resolve()):
+            for p in sorted(src_dir.rglob("*")):
+                if p.is_dir():
+                    continue
+                if not (p.name.endswith(".olean") or p.name.endswith(".olean.server") or p.name.endswith(".olean.private")):
+                    continue
+                rel = p.relative_to(src_dir)
+                if rel in seen:
+                    merged_ctx.cleanup()
+                    print(f"DUPLICATE_MODULE_OLEAN: {rel} exists in both {seen[rel]} and {p}", file=sys.stderr)
+                    return 2
+                seen[rel] = p
+                dst = merged_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.symlink_to(p)
+        env["LEAN_PATH"] = f"{merged_root}:{env['LEAN_PATH']}" if env.get("LEAN_PATH") else str(merged_root)
     h_lib = repo_root / "harness" / ".lake" / "build" / "lib" / "lean"
     h_env = {**env, "LEAN_PATH": f"{h_lib}:{env['LEAN_PATH']}" if env.get("LEAN_PATH") else str(h_lib)}
     lean_bin = shutil.which("lean", path=env.get("PATH")) or "lean"
     env_for = lambda f: h_env if f.startswith("harness/") else env
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        rows = list(pool.map(lambda f: measure_file(lean_bin, env_for(f), repo_root, f, args.poll_interval, limit_mb), files))
+    try:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            rows = list(pool.map(lambda f: measure_file(lean_bin, env_for(f), repo_root, f, args.poll_interval, limit_mb), files))
+    finally:
+        if merged_ctx is not None:
+            merged_ctx.cleanup()
 
     ranked = sorted(
         rows,
