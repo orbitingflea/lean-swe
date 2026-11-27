@@ -1,7 +1,7 @@
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Poll.Types
-import LeanSwe.LinuxSyscall.Poll.Model
+import LeanSweProofs.LinuxSyscall.Poll.Model
 import LeanSwe.LinuxSyscall.Poll.Interface
 import LeanSwe.LinuxSyscall.Poll.Impl
 import Fuzz.LinuxSyscall.SandboxEnv

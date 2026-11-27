@@ -3,8 +3,8 @@ import Fuzz.Common.Suite
 import Fuzz.Toml.Oracle
 import Fuzz.Toml.Gen
 import LeanSwe.Toml.Interface
-import LeanSwe.Toml.Model
-import LeanSwe.NumParse.Model
+import LeanSweProofs.Toml.Model
+import LeanSweProofs.NumParse.Model
 
 namespace Fuzz.Toml
 

@@ -2,10 +2,10 @@ import Fuzz.Common.Coverage
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
 import Fuzz.Common.Suite
-import LeanSwe.PostFork.Aeneas.Funs
-import LeanSwe.PostFork.Aeneas.Model
+import LeanSweProofs.PostFork.Aeneas.Funs
+import LeanSweProofs.PostFork.Aeneas.Model
 import LeanSwe.PostFork.Interface
-import LeanSwe.PostFork.Model
+import LeanSweProofs.PostFork.Model
 import LeanSwe.PostFork.Types
 
 /-!

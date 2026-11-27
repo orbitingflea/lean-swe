@@ -1,5 +1,5 @@
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
+import LeanSweProofs.Git.Model
 import LeanSwe.Git.Impl
 import LeanSwe.Git.Interface
 import LeanSwe.Fs.Interface

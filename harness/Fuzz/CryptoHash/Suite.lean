@@ -3,10 +3,10 @@ import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage
 import Fuzz.Common.Suite
 import LeanSwe.CryptoHash.Raw.Types
-import LeanSwe.CryptoHash.Raw.Model
+import LeanSweProofs.CryptoHash.Raw.Model
 import LeanSwe.CryptoHash.Raw.Interface
 import LeanSwe.CryptoHash.Types
-import LeanSwe.CryptoHash.Model
+import LeanSweProofs.CryptoHash.Model
 import LeanSwe.CryptoHash.Interface
 
 namespace Fuzz.CryptoHash

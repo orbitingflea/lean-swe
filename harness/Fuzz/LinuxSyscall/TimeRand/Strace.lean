@@ -3,7 +3,7 @@ import LeanSwe.LinuxSyscall.Sandbox.Interface
 import LeanSwe.LinuxSyscall.TestSupport.Seccomp
 import LeanSwe.LinuxSyscall.TimeRand.Impl
 import LeanSwe.LinuxSyscall.TimeRand.Interface
-import LeanSwe.LinuxSyscall.TimeRand.Model
+import LeanSweProofs.LinuxSyscall.TimeRand.Model
 import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall.TimeRand.Strace

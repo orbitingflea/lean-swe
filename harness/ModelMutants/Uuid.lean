@@ -1,6 +1,6 @@
 import Core.Obeys
 import LeanSwe.Uuid.Types
-import LeanSwe.Uuid.Model
+import LeanSweProofs.Uuid.Model
 
 /-!
 # Targeted Dummy Mutants and Satisfiability Witness for `LeanSwe.Uuid.Model`

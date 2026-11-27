@@ -5,7 +5,7 @@ import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.TimeRand.Types
 import LeanSwe.Time.Types
-import LeanSwe.Time.Model
+import LeanSweProofs.Time.Model
 import LeanSwe.Time.Interface
 
 namespace Fuzz.Time

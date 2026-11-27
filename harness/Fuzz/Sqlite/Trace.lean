@@ -1,5 +1,5 @@
 import LeanSwe.Sqlite.Types
-import LeanSwe.Sqlite.Model
+import LeanSweProofs.Sqlite.Model
 
 namespace Fuzz.Sqlite
 

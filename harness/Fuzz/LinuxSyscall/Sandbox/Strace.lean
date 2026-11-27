@@ -1,6 +1,6 @@
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Sandbox.Interface
-import LeanSwe.LinuxSyscall.Sandbox.Model
+import LeanSweProofs.LinuxSyscall.Sandbox.Model
 import Fuzz.LinuxSyscall.SandboxEnv
 
 namespace Fuzz.LinuxSyscall.Sandbox.Strace

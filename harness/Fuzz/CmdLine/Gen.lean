@@ -1,7 +1,7 @@
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
 import LeanSwe.CmdLine.Interface
-import LeanSwe.CmdLine.Model
+import LeanSweProofs.CmdLine.Model
 
 namespace Fuzz.CmdLine
 

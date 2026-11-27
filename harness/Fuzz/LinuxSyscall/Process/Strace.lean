@@ -1,7 +1,7 @@
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
-import LeanSwe.LinuxSyscall.Process.Model
+import LeanSweProofs.LinuxSyscall.Process.Model
 import LeanSwe.LinuxSyscall.Process.Interface
 import LeanSwe.LinuxSyscall.Process.Impl
 import Fuzz.LinuxSyscall.ProcessEnv

@@ -15,7 +15,7 @@ import policy across every `.lean` file in the repository without requiring comp
 3. Rejects misplaced `import` / `private import` directives immediately after the parsed
    header (including after leading module/doc comments).
 4. Rejects `import all` targeting any module whose root is outside the intra-repo roots
-   (`Core`, `LeanSwe`, `Fuzz`, `ModelMutants`), including French-quoted single-segment names
+   (`Core`, `LeanSwe`, `LeanSweProofs`, `Fuzz`, `ModelMutants`, `UnitTests`), including French-quoted single-segment names
    such as `import all «LeanSwe.Foo»`.
 5. Rejects bare umbrella imports (`import Mathlib`, `import «Mathlib»`,
    `public import Mathlib`, `meta import Mathlib`, etc.); specific submodules such as
@@ -29,7 +29,7 @@ Usage:
 open Lean
 
 private def internalImportRoots : Array String :=
-  #["Core", "LeanSwe", "Fuzz", "ModelMutants", "UnitTests"]
+  #["Core", "LeanSwe", "LeanSweProofs", "Fuzz", "ModelMutants", "UnitTests"]
 
 private def forbiddenUmbrellaImports : Array String :=
   #["Mathlib"]
@@ -40,7 +40,7 @@ private def isInternalImportRoot (mod : Name) : Bool :=
   | .str .anonymous rootSeg =>
     !rootSeg.contains '.' &&
     internalImportRoots.contains rootSeg &&
-    (root == `Core || root == `LeanSwe || root == `Fuzz || root == `ModelMutants || root == `UnitTests)
+    (root == `Core || root == `LeanSwe || root == `LeanSweProofs || root == `Fuzz || root == `ModelMutants || root == `UnitTests)
   | _ => false
 
 private def layer1AllowedRoots : Array String :=
@@ -71,11 +71,16 @@ private def normalizedModSegments (mod : Name) : List String :=
     | .str _ s => s.splitOn "."
     | _ => [c.toString]
 
-/-- Split a `LeanSwe.*` segment list into `(pkgSegments, effectiveRole, roleAndTailSegments)`
+/-- Split a `LeanSwe.*` or `LeanSweProofs.*` segment list into
+`(pkgSegments, effectiveRole, roleAndTailSegments)` normalized to `"LeanSwe"`
 without hardcoding any `LeanSwe.<Pkg>` names. -/
 private def classifyLeanSweSegments (segs : List String) : Option (List String × String × List String) :=
-  match segs with
-  | "LeanSwe" :: rest =>
+  let rest? := match segs with
+    | "LeanSwe" :: rest => some rest
+    | "LeanSweProofs" :: rest => some rest
+    | _ => none
+  match rest? with
+  | some rest =>
     let rec findMarker (idx : Nat) (xs : List String) : Option (List String × List String) :=
       match xs with
       | [] => none
@@ -123,7 +128,7 @@ private def checkLayerImportPolicy (relPath policyPath : String) (lineNo : Nat) 
       some s!"{relPath}:{lineNo}: Layer 1 forbids importing Layer 2 module '{modStr}'"
     else
       none
-  else if normPath.startsWith "proofs/LeanSwe/" && normPath.endsWith ".lean" then
+  else if normPath.startsWith "proofs/LeanSweProofs/" && normPath.endsWith ".lean" then
     let stripped := (normPath.drop 7).toString
     let srcSegs := ((stripped.dropEnd 5).toString).splitOn "/"
     match classifyLeanSweSegments srcSegs, classifyLeanSweSegments segs with
@@ -144,9 +149,9 @@ private def checkLayerImportPolicy (relPath policyPath : String) (lineNo : Nat) 
         none
     | _, _ => none
   else if normPath.startsWith "harness/" && normPath != "harness/lakefile.lean" then
-    if rootSeg == "LeanSweProofs" then
+    if segs == ["LeanSweProofs"] then
       some s!"{relPath}:{lineNo}: Layer 3 harness forbids importing umbrella '{modStr}'"
-    else if rootSeg == "LeanSwe" then
+    else if rootSeg == "LeanSwe" || rootSeg == "LeanSweProofs" then
       if (segs.drop 1).any harnessAlwaysForbiddenSegments.contains then
         some s!"{relPath}:{lineNo}: Layer 3 harness forbids importing '{modStr}' (SpecTests/SpecMutants/Proofs/Verified/SysBridge banned)"
       else if normPath == "harness/UnitTests.lean" || normPath.startsWith "harness/UnitTests/" ||
@@ -381,7 +386,7 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
     let modStr := imp.module.toString
     if imp.importAll && !isInternalImportRoot imp.module then
       violations := violations.push
-        s!"{relPath}:{lineNo}: disallowed external 'import all {modStr}' (only intra-repo modules under Core/LeanSwe/Fuzz/ModelMutants/UnitTests may use 'import all')"
+        s!"{relPath}:{lineNo}: disallowed external 'import all {modStr}' (only intra-repo modules under Core/LeanSwe/LeanSweProofs/Fuzz/ModelMutants/UnitTests may use 'import all')"
     if isForbiddenUmbrellaImport imp.module then
       violations := violations.push
         s!"{relPath}:{lineNo}: disallowed umbrella import '{modStr}' (import specific submodule(s) instead, e.g. 'Mathlib.Data.Nat.Basic')"
@@ -724,6 +729,7 @@ private def runSelfTests : IO UInt32 := do
     ("tests_retired", "module\nimport all Tests.Main\n", "Tests.Main"),
     ("tests_extra", "module\nimport all TestsExtra.Main\n", "TestsExtra.Main"),
     ("quoted_leanswe_dot", "module\nimport all «LeanSwe.Foo»\n", "«LeanSwe.Foo»"),
+    ("quoted_leansweproofs_dot", "module\nimport all «LeanSweProofs.Foo»\n", "«LeanSweProofs.Foo»"),
     ("quoted_leanswe_dot_sub", "module\nimport all «LeanSwe.Foo».Bar\n", "«LeanSwe.Foo».Bar"),
     ("quoted_core_dot", "module\nimport all «Core.Types»\n", "«Core.Types»"),
     ("multiline_comment", "module\nimport /- c -/ all\n  -- comment\n  Batteries.Data.List\n", "Batteries.Data.List"),
@@ -939,12 +945,14 @@ private def runSelfTests : IO UInt32 := do
     "import all.Mathlib",
     "import «all»",
     "import all LeanSwe.Foo.Impl",
+    "import all LeanSweProofs.Foo.Model",
     "meta import all LeanSwe.Foo.Impl",
     "import all «LeanSwe».Foo.Impl",
     "import all\n  -- multiline intra-repo import all\n  LeanSwe.Bar.Impl",
     "import all Core.NondetTest",
     "import all Fuzz.Common.Rng",
     "import all LeanSwe",
+    "import all LeanSweProofs",
     "import all Core",
     "import all Fuzz",
     "import all «LeanSwe»",
@@ -952,7 +960,7 @@ private def runSelfTests : IO UInt32 := do
     "public def shown : Nat := 2"
   ]
   let (modCount, modErrs) ← checkSourceText "Ok.lean" allowedModule
-  assertTrue "allowed_module" (modErrs.isEmpty && modCount == 30)
+  assertTrue "allowed_module" (modErrs.isEmpty && modCount == 32)
     s!"count={modCount} errs={modErrs}"
   checks := checks + 1
 
@@ -993,7 +1001,7 @@ private def runSelfTests : IO UInt32 := do
 
     let walkDir := tmpRoot / "plain"
     writeFileCreatingParents (walkDir / "Core/Types.lean") "def t : Nat := 1\n"
-    writeFileCreatingParents (walkDir / "proofs/LeanSwe/Demo/Proofs.lean")
+    writeFileCreatingParents (walkDir / "proofs/LeanSweProofs/Demo/Proofs.lean")
       "module\nimport Mathlib.Data.Nat.Basic\nimport all LeanSwe.Demo.Impl\n"
     writeFileCreatingParents (walkDir / ".lake/packages/bad/Bad.lean") "import Mathlib\n"
     writeFileCreatingParents (walkDir / "harness/.lake/build/Bad.lean") "import Mathlib\n"
@@ -1036,7 +1044,7 @@ private def runSelfTests : IO UInt32 := do
       s!"checked={plainRelOk.checked} viols={plainRelOk.violations} errs={plainRelOk.errors}"
     checks := checks + 1
 
-    writeFileCreatingParents (walkDir / "proofs/LeanSwe/Demo/Bad.lean") "import Mathlib\n"
+    writeFileCreatingParents (walkDir / "proofs/LeanSweProofs/Demo/Bad.lean") "import Mathlib\n"
     writeBinCreatingParents (walkDir / "LeanSwe/Demo/BadUtf8.lean") (ByteArray.mk #[0xFF, 0xFE])
     writeBinCreatingParents (walkDir / "LeanSwe/Demo/Bom.lean")
       (ByteArray.mk (#[0xEF, 0xBB, 0xBF] ++ "import Core.Types\n".toUTF8.data))
@@ -1046,7 +1054,7 @@ private def runSelfTests : IO UInt32 := do
     assertTrue "walk_catches_bad_utf8_bom_and_nul"
       (plainBad.checked == 6 &&
         plainBad.violations.size == 4 &&
-        plainBad.violations.any (containsSubstr · "proofs/LeanSwe/Demo/Bad.lean:1:") &&
+        plainBad.violations.any (containsSubstr · "proofs/LeanSweProofs/Demo/Bad.lean:1:") &&
         plainBad.violations.any (containsSubstr · "LeanSwe/Demo/BadUtf8.lean:1:") &&
         plainBad.violations.any (containsSubstr · "LeanSwe/Demo/Bom.lean:1:") &&
         plainBad.violations.any (fun v => containsSubstr v "LeanSwe/Demo/NulBody.lean:3:" && containsSubstr v "NUL byte"))
@@ -1058,7 +1066,7 @@ private def runSelfTests : IO UInt32 := do
       (plainLinkBad.checked == 6 &&
         plainLinkBad.errors.isEmpty &&
         plainLinkBad.violations.size == 4 &&
-        plainLinkBad.violations.any (containsSubstr · "proofs/LeanSwe/Demo/Bad.lean:1:") &&
+        plainLinkBad.violations.any (containsSubstr · "proofs/LeanSweProofs/Demo/Bad.lean:1:") &&
         plainLinkBad.violations.any (containsSubstr · "LeanSwe/Demo/NulBody.lean:3:"))
       s!"checked={plainLinkBad.checked} viols={plainLinkBad.violations} errs={plainLinkBad.errors}"
     checks := checks + 1
@@ -1153,7 +1161,7 @@ private def runSelfTests : IO UInt32 := do
     runCmdOk repoDir "git" #["init", "-q"]
     writeFileCreatingParents (repoDir / "LeanSwe/Demo/Impl.lean") "import Core.Types\ndef x := 1\n"
     writeFileCreatingParents (repoDir / "LeanSwe/Demo/Types.lean") "def t := 1\n"
-    writeFileCreatingParents (repoDir / "proofs/LeanSwe/Demo/Proofs.lean")
+    writeFileCreatingParents (repoDir / "proofs/LeanSweProofs/Demo/Proofs.lean")
       "module\nimport Mathlib.Data.Nat.Basic\nimport all LeanSwe.Demo.Impl\n"
     runCmdOk repoDir "ln" #["-s", "Types.lean", (repoDir / "LeanSwe/Demo/Link.lean").toString]
     runCmdOk repoDir "git" #["add", "."]
@@ -1210,15 +1218,15 @@ private def runSelfTests : IO UInt32 := do
     ("l1_init_float_model", "LeanSwe/Demo/Impl.lean", "import Init.Data.Float.Model\nimport Std.Data.HashMap\nimport Core.ConcOps\nimport LeanSwe.Demo.Types\n"),
     ("l1_core_imports_core", "Core/ConcOps.lean", "import Core.Obeys\n"),
     ("l1_umbrella_types", "LeanSwe.lean", "import Core.Obeys\nimport LeanSwe.Demo.Interface\n"),
-    ("l2_model_imports_types_and_dep_model", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.Types\nimport LeanSwe.Other.Types\nimport LeanSwe.Other.Model\n"),
-    ("l2_aeneas_model_imports_aeneas_types", "proofs/LeanSwe/Demo/Aeneas/Model/World.lean", "import LeanSwe.Demo.Aeneas.Types\n"),
-    ("l2_proofs_same_pkg_impl_and_cross_iface", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Demo.Impl\nimport LeanSwe.Demo.SysBridge\nimport LeanSwe.Other.Types\nimport LeanSwe.Other.Model\nimport LeanSwe.Other.Interface\n"),
-    ("l2_nested_pkg_same_raw_impl", "proofs/LeanSwe/Demo/Raw/Proofs.lean", "import LeanSwe.Demo.Raw.Impl\nimport LeanSwe.Demo.Raw.Model\n"),
-    ("l3_unit_tests_import_all", "harness/UnitTests/Sample.lean", "module\nimport all UnitTests\nimport LeanSwe.Demo.Types\nimport LeanSwe.Demo.Model\nimport LeanSwe.Demo.Interface\n"),
-    ("l3_model_mutants_iface_model", "harness/ModelMutants/Demo.lean", "import Core.Obeys\nimport LeanSwe.Demo.Model\nimport LeanSwe.Demo.Interface\n"),
-    ("l3_fuzz_matching_suite_top_impl", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Impl\nimport LeanSwe.Demo.Interface\nimport LeanSwe.Demo.Model\n"),
+    ("l2_model_imports_types_and_dep_model", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSwe.Demo.Types\nimport LeanSwe.Other.Types\nimport LeanSweProofs.Other.Model\n"),
+    ("l2_aeneas_model_imports_aeneas_types", "proofs/LeanSweProofs/Demo/Aeneas/Model/World.lean", "import LeanSweProofs.Demo.Aeneas.Types\n"),
+    ("l2_proofs_same_pkg_impl_and_cross_iface", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Demo.Impl\nimport LeanSwe.Demo.SysBridge\nimport LeanSwe.Other.Types\nimport LeanSweProofs.Other.Model\nimport LeanSwe.Other.Interface\n"),
+    ("l2_nested_pkg_same_raw_impl", "proofs/LeanSweProofs/Demo/Raw/Proofs.lean", "import LeanSwe.Demo.Raw.Impl\nimport LeanSweProofs.Demo.Raw.Model\n"),
+    ("l3_unit_tests_import_all", "harness/UnitTests/Sample.lean", "module\nimport all UnitTests\nimport LeanSwe.Demo.Types\nimport LeanSweProofs.Demo.Model\nimport LeanSwe.Demo.Interface\n"),
+    ("l3_model_mutants_iface_model", "harness/ModelMutants/Demo.lean", "import Core.Obeys\nimport LeanSweProofs.Demo.Model\nimport LeanSwe.Demo.Interface\n"),
+    ("l3_fuzz_matching_suite_top_impl", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Impl\nimport LeanSwe.Demo.Interface\nimport LeanSweProofs.Demo.Model\n"),
     ("l3_fuzz_matching_linuxsyscall_impl", "harness/Fuzz/LinuxSyscall/Demo/Strace.lean", "import LeanSwe.LinuxSyscall.Demo.Impl\n"),
-    ("l3_fuzz_matching_aeneas_funs_model", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Aeneas.Funs\nimport LeanSwe.Demo.Aeneas.Model\n")
+    ("l3_fuzz_matching_aeneas_funs_model", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.Aeneas.Funs\nimport LeanSweProofs.Demo.Aeneas.Model\n")
   ]
   for (label, path, src) in layerAllowedCases do
     let (_, errs) ← checkSourceText path src
@@ -1227,6 +1235,8 @@ private def runSelfTests : IO UInt32 := do
 
   let layerRejectedCases : Array (String × String × String × String) := #[
     ("l1_imports_model", "LeanSwe/Demo/Impl.lean", "import LeanSwe.Demo.Model\n", "Layer 1 forbids importing Layer 2"),
+    ("l1_imports_proofs_root_model", "LeanSwe/Demo/Impl.lean", "import LeanSweProofs.Demo.Model\n", "Layer 1 forbids external/upper-layer import"),
+    ("l1_imports_proofs_umbrella", "LeanSwe/Demo/Impl.lean", "import LeanSweProofs\n", "Layer 1 forbids external/upper-layer import"),
     ("l1_imports_proofs", "LeanSwe/Demo/Interface.lean", "import LeanSwe.Demo.Proofs\n", "Layer 1 forbids importing Layer 2"),
     ("l1_imports_properties", "LeanSwe/Demo/Types.lean", "import LeanSwe.Demo.Properties\n", "Layer 1 forbids importing Layer 2"),
     ("l1_imports_spectests", "LeanSwe/Demo/Impl.lean", "import LeanSwe.Demo.SpecTests\n", "Layer 1 forbids importing Layer 2"),
@@ -1237,36 +1247,36 @@ private def runSelfTests : IO UInt32 := do
     ("l1_imports_ext_mathlib", "Core/ConcOps.lean", "import Mathlib.Data.Nat.Basic\n", "Layer 1 forbids external/upper-layer import"),
     ("l1_umbrella_model", "LeanSwe.lean", "import LeanSwe.Demo.Model\n", "Layer 1 forbids importing Layer 2"),
     ("l1_quoted_spoof_model", "LeanSwe/Demo/Impl.lean", "import «LeanSwe.Demo.Model»\n", "Layer 1 forbids importing Layer 2"),
-    ("l2_model_imports_impl", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.Impl\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_sysbridge", "proofs/LeanSwe/Demo/Model/Sub.lean", "import LeanSwe.Demo.SysBridge\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_proofs", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.Proofs\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_spectests", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.SpecTests\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_specmutants", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.SpecMutants\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_verified", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.Verified\n", "Layer 2 Model file forbids importing"),
-    ("l2_model_imports_aeneas_funs", "proofs/LeanSwe/Demo/Model.lean", "import LeanSwe.Demo.Aeneas.Funs\n", "Layer 2 Model file forbids importing"),
-    ("l2_proofs_cross_impl", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.Impl\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_sysbridge", "proofs/LeanSwe/Demo/Proofs/Sub.lean", "import LeanSwe.Other.SysBridge\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_aeneas", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.Aeneas.Types\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_spectests", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.SpecTests\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_specmutants", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.SpecMutants\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_verified", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.Verified\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_proofs", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Other.Proofs\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_properties_cross_properties", "proofs/LeanSwe/Demo/Properties.lean", "import LeanSwe.Other.Properties\n", "Layer 2 Properties file forbids cross-package"),
-    ("l2_parent_vs_raw_cross_impl", "proofs/LeanSwe/Demo/Proofs.lean", "import LeanSwe.Demo.Raw.Impl\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l3_fuzz_spectests", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.SpecTests\n", "Layer 3 harness forbids importing"),
-    ("l3_fuzz_specmutants", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.SpecMutants\n", "Layer 3 harness forbids importing"),
-    ("l3_fuzz_proofs", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Proofs\n", "Layer 3 harness forbids importing"),
-    ("l3_fuzz_verified", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Verified\n", "Layer 3 harness forbids importing"),
+    ("l2_model_imports_impl", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSwe.Demo.Impl\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_sysbridge", "proofs/LeanSweProofs/Demo/Model/Sub.lean", "import LeanSwe.Demo.SysBridge\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_proofs", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Proofs\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_spectests", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.SpecTests\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_specmutants", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.SpecMutants\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_verified", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Verified\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_aeneas_funs", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Aeneas.Funs\n", "Layer 2 Model file forbids importing"),
+    ("l2_proofs_cross_impl", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Other.Impl\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_sysbridge", "proofs/LeanSweProofs/Demo/Proofs/Sub.lean", "import LeanSwe.Other.SysBridge\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_aeneas", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Aeneas.Types\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_spectests", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.SpecTests\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_specmutants", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.SpecMutants\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_verified", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Verified\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_proofs", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Proofs\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_properties_cross_properties", "proofs/LeanSweProofs/Demo/Properties.lean", "import LeanSweProofs.Other.Properties\n", "Layer 2 Properties file forbids cross-package"),
+    ("l2_parent_vs_raw_cross_impl", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Demo.Raw.Impl\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l3_fuzz_spectests", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.SpecTests\n", "Layer 3 harness forbids importing"),
+    ("l3_fuzz_specmutants", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.SpecMutants\n", "Layer 3 harness forbids importing"),
+    ("l3_fuzz_proofs", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.Proofs\n", "Layer 3 harness forbids importing"),
+    ("l3_fuzz_verified", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.Verified\n", "Layer 3 harness forbids importing"),
     ("l3_fuzz_sysbridge", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.SysBridge\n", "Layer 3 harness forbids importing"),
     ("l3_fuzz_umbrella_proofs", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs\n", "Layer 3 harness forbids importing umbrella"),
     ("l3_fuzz_cross_suite_impl", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Other.Impl\n", "Layer 3 Fuzz forbids importing"),
     ("l3_fuzz_impl_submodule", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Impl.Sub\n", "Layer 3 Fuzz forbids importing"),
     ("l3_fuzz_common_impl", "harness/Fuzz/Common/Helper.lean", "import LeanSwe.Demo.Impl\n", "Layer 3 Fuzz forbids importing"),
-    ("l3_fuzz_aeneas_api", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Demo.Aeneas.Api\n", "Layer 3 Fuzz forbids importing"),
-    ("l3_fuzz_cross_aeneas", "harness/Fuzz/Demo/Suite.lean", "import LeanSwe.Other.Aeneas.Funs\n", "Layer 3 Fuzz forbids importing"),
+    ("l3_fuzz_aeneas_api", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.Aeneas.Api\n", "Layer 3 Fuzz forbids importing"),
+    ("l3_fuzz_cross_aeneas", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Other.Aeneas.Funs\n", "Layer 3 Fuzz forbids importing"),
     ("l3_model_mutants_impl", "harness/ModelMutants/Demo.lean", "import LeanSwe.Demo.Impl\n", "Layer 3 ModelMutants/UnitTests forbids importing"),
     ("l3_unit_tests_impl", "harness/UnitTests/Demo.lean", "import LeanSwe.Demo.Impl\n", "Layer 3 ModelMutants/UnitTests forbids importing"),
-    ("l3_unit_tests_aeneas", "harness/UnitTests/Demo.lean", "import LeanSwe.Demo.Aeneas.Model\n", "Layer 3 ModelMutants/UnitTests forbids importing")
+    ("l3_unit_tests_aeneas", "harness/UnitTests/Demo.lean", "import LeanSweProofs.Demo.Aeneas.Model\n", "Layer 3 ModelMutants/UnitTests forbids importing")
   ]
   for (label, path, src, needle) in layerRejectedCases do
     let (_, errs) ← checkSourceText path src
@@ -1283,8 +1293,8 @@ private def runSelfTests : IO UInt32 := do
     writeFileCreatingParents (layerSubdirRepo / "LeanSwe.lean") "import LeanSwe.Demo.Types\n"
     writeFileCreatingParents (layerSubdirRepo / "LeanSwe/Demo/Types.lean") "def t : Nat := 0\n"
     writeFileCreatingParents (layerSubdirRepo / "LeanSwe/Demo/Impl.lean") "import LeanSwe.Demo.Model\n"
-    writeFileCreatingParents (layerSubdirRepo / "proofs/LeanSwe/Demo/Model.lean") "import LeanSwe.Demo.Types\n"
-    writeFileCreatingParents (layerSubdirRepo / "proofs/LeanSwe/Demo/Proofs.lean") "import LeanSwe.Demo.Model\n"
+    writeFileCreatingParents (layerSubdirRepo / "proofs/LeanSweProofs/Demo/Model.lean") "import LeanSwe.Demo.Types\n"
+    writeFileCreatingParents (layerSubdirRepo / "proofs/LeanSweProofs/Demo/Proofs.lean") "import LeanSweProofs.Demo.Model\n"
     writeFileCreatingParents (layerSubdirRepo / "harness/UnitTests/Demo.lean") "import LeanSwe.Demo.Impl\n"
 
     let proofsSubRes ← checkTargetPath (layerSubdirRepo / "proofs")
@@ -1311,7 +1321,7 @@ private def runSelfTests : IO UInt32 := do
       s!"got {absL1FileRes.violations}"
     checks := checks + 1
 
-    let absL2FileRes ← checkTargetPath (layerSubdirRepo / "proofs/LeanSwe/Demo/Proofs.lean")
+    let absL2FileRes ← checkTargetPath (layerSubdirRepo / "proofs/LeanSweProofs/Demo/Proofs.lean")
     assertTrue "abs_file_target_l2_clean"
       (absL2FileRes.checked == 1 && absL2FileRes.violations.isEmpty && absL2FileRes.errors.isEmpty)
       s!"got {absL2FileRes.violations} / {absL2FileRes.errors}"

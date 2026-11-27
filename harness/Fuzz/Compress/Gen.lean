@@ -1,5 +1,5 @@
 import Fuzz.Common.Rng
-import LeanSwe.Compress.Model
+import LeanSweProofs.Compress.Model
 
 namespace Fuzz.Compress
 

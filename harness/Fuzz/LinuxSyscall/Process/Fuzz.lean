@@ -2,7 +2,7 @@ import Std.Data.TreeSet
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Process.Types
-import LeanSwe.LinuxSyscall.Process.Model
+import LeanSweProofs.LinuxSyscall.Process.Model
 import LeanSwe.LinuxSyscall.Process.Interface
 import Fuzz.LinuxSyscall.Rng
 import Fuzz.LinuxSyscall.ProcessEnv

@@ -1,5 +1,5 @@
 import LeanSwe.ProcessSandbox.Types
-import LeanSwe.ProcessSandbox.Model
+import LeanSweProofs.ProcessSandbox.Model
 
 namespace ModelMutants.ProcessSandbox
 

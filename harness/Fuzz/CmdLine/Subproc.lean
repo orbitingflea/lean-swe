@@ -1,6 +1,6 @@
 import Fuzz.Common.Coverage
 import LeanSwe.CmdLine.Interface
-import LeanSwe.CmdLine.Model
+import LeanSweProofs.CmdLine.Model
 
 namespace Fuzz.CmdLine.Subproc
 

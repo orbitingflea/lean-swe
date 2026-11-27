@@ -6,7 +6,7 @@ import Fuzz.Passwd.Gen
 import Fuzz.Passwd.Checks
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Passwd.Types
-import LeanSwe.LinuxSyscall.Passwd.Model
+import LeanSweProofs.LinuxSyscall.Passwd.Model
 import LeanSwe.LinuxSyscall.Passwd.Interface
 import LeanSwe.LinuxSyscall.Sandbox.Interface
 import Fuzz.LinuxSyscall.SandboxEnv

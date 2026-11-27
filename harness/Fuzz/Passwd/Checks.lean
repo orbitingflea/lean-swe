@@ -1,7 +1,7 @@
 import Fuzz.Common.Suite
 import LeanSwe.LinuxSyscall.Passwd.Impl
 import LeanSwe.LinuxSyscall.Passwd.Interface
-import LeanSwe.LinuxSyscall.Passwd.Model
+import LeanSweProofs.LinuxSyscall.Passwd.Model
 
 namespace Fuzz.Passwd.Checks
 

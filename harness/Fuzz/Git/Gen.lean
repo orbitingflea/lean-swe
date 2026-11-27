@@ -1,5 +1,5 @@
 import LeanSwe.Git.Types
-import LeanSwe.Git.Model
+import LeanSweProofs.Git.Model
 import Fuzz.Common.Rng
 
 namespace Fuzz.Git

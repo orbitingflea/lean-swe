@@ -6,7 +6,7 @@ import Fuzz.CmdLine.Gen
 import Fuzz.CmdLine.Subproc
 import Fuzz.LinuxSyscall.Env
 import LeanSwe.CmdLine.Interface
-import LeanSwe.CmdLine.Model
+import LeanSweProofs.CmdLine.Model
 import LeanSwe.EnvVars.Raw.Interface
 
 namespace Fuzz.CmdLine

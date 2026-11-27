@@ -4,7 +4,7 @@ import Fuzz.Common.Shrink
 import Fuzz.Common.Suite
 import Fuzz.Compress.Oracle
 import Fuzz.Compress.Gen
-import LeanSwe.Compress.Model
+import LeanSweProofs.Compress.Model
 import LeanSwe.Compress.Impl
 import LeanSwe.Compress.Interface
 import LeanSwe.Process.Interface

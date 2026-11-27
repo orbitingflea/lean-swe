@@ -1,6 +1,6 @@
 import LeanSwe.Sqlite.Interface
 import LeanSwe.Sqlite.Raw.Interface
-import LeanSwe.Sqlite.Model
+import LeanSweProofs.Sqlite.Model
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
 import Fuzz.Common.Coverage

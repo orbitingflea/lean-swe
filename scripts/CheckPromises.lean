@@ -76,9 +76,28 @@ private def allowedAxioms : Std.HashSet Name :=
 private def legacyEmpiricalModules : Std.HashSet Name :=
   Std.HashSet.emptyWithCapacity 0
 
+private def isLeanSweRoot (r : Name) : Bool :=
+  r == `LeanSwe || r == `LeanSweProofs
+
+private def isLeanSweMod (m : Name) : Bool :=
+  isLeanSweRoot m.getRoot
+
+private def isLeanSweUmbrella (m : Name) : Bool :=
+  m == `LeanSwe || m == `LeanSweProofs
+
+private def normalizeLeanSweMod (m : Name) : Name :=
+  match m.components with
+  | `LeanSweProofs :: rest =>
+    rest.foldl (fun acc seg =>
+      match seg with
+      | .str _ s => Name.str acc s
+      | .num _ n => Name.num acc n
+      | .anonymous => acc) `LeanSwe
+  | _ => m
+
 private def isProjectModule (m : Name) : Bool :=
   let r := m.getRoot
-  r == `Core || r == `LeanSwe
+  r == `Core || isLeanSweRoot r
 
 private def nameLastStr (n : Name) : String :=
   match n with
@@ -91,9 +110,10 @@ private def isNamePrefixComps (pfx comps : List Name) : Bool :=
 private def isVerifiedOnlyMod (verifiedMod m : Name) : Bool :=
   if m == verifiedMod then true
   else
-    let pkg := verifiedMod.getPrefix
-    isNamePrefixComps pkg.components m.components &&
-      match m.components.drop pkg.components.length with
+    let pkg := (normalizeLeanSweMod verifiedMod).getPrefix
+    let nm := normalizeLeanSweMod m
+    isNamePrefixComps pkg.components nm.components &&
+      match nm.components.drop pkg.components.length with
       | h :: _ =>
         h == `Verified || h == `Aeneas || h == `SpecTests ||
           h == `SpecMutants || h == `Proofs || h == `Properties
@@ -232,7 +252,7 @@ private partial def hasSyntaxKindInClosure (k : Name) (stx : Syntax) : Bool :=
 
 private def isAllowedProjectDirectImport (allowAeneas : Bool) (m imp : Name) : Bool :=
   let r := imp.getRoot
-  r == `Init || r == `Std || r == `Core || r == `LeanSwe ||
+  r == `Init || r == `Std || r == `Core || isLeanSweRoot r ||
     imp.components.take 2 == [`Lean, `Data] ||
     (allowAeneas && imp == `Aeneas && m.components.contains `Aeneas)
 
@@ -835,9 +855,6 @@ private def moduleNameUnderRoot (rootDir entry : System.FilePath) (rootMod : Nam
   ((entry.withExtension "").components.drop rootDir.components.length).foldl
     (fun acc seg => if seg == "." || seg.isEmpty then acc else Name.str acc seg) rootMod
 
-private def moduleNameUnderLeanSwe (leanSweDir entry : System.FilePath) : Name :=
-  moduleNameUnderRoot leanSweDir entry `LeanSwe
-
 private partial def collectLeanRelFiles (dir : System.FilePath) (relPrefix : String) :
     IO (Array (String × System.FilePath)) := do
   let mut out : Array (String × System.FilePath) := #[]
@@ -921,7 +938,8 @@ private def dagSubdirExcludeSegs : Array Name := #[
 private def discoverDagPackages (modNames : Array Name) : Array Name := Id.run do
   let mut seen : Std.HashSet Name := {}
   let mut pkgs : Array Name := #[]
-  for m in modNames do
+  for rawM in modNames do
+    let m := normalizeLeanSweMod rawM
     if m.getRoot != `LeanSwe || m == `LeanSwe then
       continue
     match m with
@@ -937,9 +955,10 @@ private def discoverDagPackages (modNames : Array Name) : Array Name := Id.run d
     if la != lb then la > lb else a.toString < b.toString
 
 private def dagPkgOf (knownPkgs : Array Name) (m : Name) : Name := Id.run do
-  if m == `LeanSwe then
+  let nm := normalizeLeanSweMod m
+  if nm == `LeanSwe then
     return `LeanSwe
-  let mc := m.components
+  let mc := nm.components
   for p in knownPkgs do
     if isNamePrefixComps p.components mc then
       return p
@@ -948,16 +967,17 @@ private def dagPkgOf (knownPkgs : Array Name) (m : Name) : Name := Id.run do
       return (mc.take (tsIdx + 1)).foldl (fun acc seg => Name.str acc seg.getString!) .anonymous
   if mc.length >= 2 then
     return Name.str `LeanSwe mc[1]!.getString!
-  return m
+  return nm
 
 private def dagRoleOf (knownPkgs : Array Name) (m : Name) : DagModuleRole :=
-  if m == `LeanSwe then .umbrella
-  else if m.getRoot != `LeanSwe then .other
+  if isLeanSweUmbrella m then .umbrella
+  else if !isLeanSweMod m then .other
   else
-    let pkg := dagPkgOf knownPkgs m
+    let nm := normalizeLeanSweMod m
+    let pkg := dagPkgOf knownPkgs nm
     if nameLastStr pkg == "TestSupport" then .testSupport
     else
-      let rem := m.components.drop pkg.components.length
+      let rem := nm.components.drop pkg.components.length
       if rem.isEmpty then .umbrella
       else
         let head := rem.head!
@@ -1007,15 +1027,18 @@ private def isLazyAuxModelSuffix (s : String) : Bool :=
 
 private def isModelNamespaceDeclName (uName : Name) : Bool :=
   let comps := uName.components
-  if comps.head? != some `LeanSwe then false
-  else
-    let rec scan : List Name → Bool
-      | [] => false
-      | seg :: rest =>
-        if seg == `Proofs || seg.toString.endsWith "Proofs" then false
-        else if seg == `Model then true
-        else scan rest
-    scan (comps.drop 1)
+  match comps.head? with
+  | some r =>
+    if !isLeanSweRoot r then false
+    else
+      let rec scan : List Name → Bool
+        | [] => false
+        | seg :: rest =>
+          if seg == `Proofs || seg.toString.endsWith "Proofs" then false
+          else if seg == `Model then true
+          else scan rest
+      scan (comps.drop 1)
+  | none => false
 
 private def hasNonProofUserDeclPrefix (nonProofUsers : Std.HashSet Name) (u : Name) : Bool :=
   let rec go : Nat → Name → Bool
@@ -1043,19 +1066,19 @@ private def computeLeanSweTransImports (env : Environment) : Array (Std.HashSet 
   let mut adj : Array (Array Nat) := Array.replicate n #[]
   for i in [0 : n] do
     let m := env.header.moduleNames[i]!
-    if !isProjectModule m || m == `LeanSwe then continue
+    if !isProjectModule m || isLeanSweUmbrella m then continue
     let some data := env.header.moduleData[i]? | continue
     let mut deps : Array Nat := #[]
     for imp in data.imports do
       if let some j := idxMap.get? imp.module then
         let jm := env.header.moduleNames[j]!
-        if isProjectModule jm && jm != `LeanSwe then
+        if isProjectModule jm && !isLeanSweUmbrella jm then
           deps := deps.push j
     adj := adj.set! i deps
   let mut trans : Array (Std.HashSet Nat) := Array.replicate n {}
   for i in [0 : n] do
     let m := env.header.moduleNames[i]!
-    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    if !isLeanSweMod m || isLeanSweUmbrella m then continue
     let mut visited : Std.HashSet Nat := {}
     let mut leanSweSeen : Std.HashSet Nat := {}
     let mut stack : Array Nat := adj[i]!
@@ -1064,7 +1087,7 @@ private def computeLeanSweTransImports (env : Environment) : Array (Std.HashSet 
       stack := stack.pop
       if visited.contains j then continue
       visited := visited.insert j
-      if env.header.moduleNames[j]!.getRoot == `LeanSwe then
+      if isLeanSweMod env.header.moduleNames[j]! then
         leanSweSeen := leanSweSeen.insert j
       for k in adj[j]! do
         if !visited.contains k then
@@ -1123,7 +1146,7 @@ private def auditImportDagEnv
   let mut nonProofUsers : Std.HashSet Name := {}
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
-    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    if !isLeanSweMod m || isLeanSweUmbrella m then continue
     if (dagRoleOf knownPkgs m).isDisallowedSpecOrSigRole then continue
     let some data := env.header.moduleData[i]? | continue
     for c in data.constants do
@@ -1156,7 +1179,7 @@ private def auditImportDagEnv
   let mut checkedModules : Nat := 0
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
-    if m.getRoot != `LeanSwe || m == `LeanSwe || !includeMod m then continue
+    if !isLeanSweMod m || isLeanSweUmbrella m || !includeMod m then continue
     let some data := env.header.moduleData[i]? | continue
     checkedModules := checkedModules + 1
     let pkgM := dagPkgOf knownPkgs m
@@ -1211,7 +1234,7 @@ private def auditImportDagEnv
     let mut directCrossNonPublic : Std.HashSet Name := {}
     for imp in data.imports do
       let t := imp.module
-      if t.getRoot != `LeanSwe || t == `LeanSwe then continue
+      if !isLeanSweMod t || isLeanSweUmbrella t then continue
       let pkgT := dagPkgOf knownPkgs t
       let roleT := dagRoleOf knownPkgs t
       if pkgM != pkgT && roleT != .types && roleT != .model && roleT != .iface then
@@ -1234,7 +1257,7 @@ private def auditImportDagEnv
       if roleM == .specTests || roleM == .properties then
         for u in usedTy ++ usedVal do
           let um := modOf u
-          if um.getRoot == `LeanSwe then
+          if isLeanSweMod um then
             let roleU := dagRoleOf knownPkgs um
             if !(roleM == .properties && dagPkgOf knownPkgs um == pkgM && roleU == .properties) &&
                 roleU.isDisallowedSpecOrSigRole then
@@ -1249,7 +1272,7 @@ private def auditImportDagEnv
           let mut seenU : Std.HashSet String := {}
           for u in c.type.getUsedConstants do
             let um := modOf u
-            if um.getRoot == `LeanSwe then
+            if isLeanSweMod um then
               let roleU := dagRoleOf knownPkgs um
               let allowedPropHead :=
                 roleU == .properties && dagPkgOf knownPkgs um == pkgM && isOnlyPromiseHeadInSig c.type u
@@ -1269,7 +1292,7 @@ private def auditImportDagEnv
             let mut seenU : Std.HashSet String := {}
             for u in v.type.getUsedConstants do
               let um := modOf u
-              if um.getRoot == `LeanSwe then
+              if isLeanSweMod um then
                 let roleU := dagRoleOf knownPkgs um
                 let allowedPropHead :=
                   roleU == .properties && dagPkgOf knownPkgs um == pkgM && isOnlyPromiseHeadInSig v.type u
@@ -1282,7 +1305,7 @@ private def auditImportDagEnv
       for u in usedTy ++ usedVal do
         let uOrigin := originConstOf u
         let um := modOf uOrigin
-        if um.getRoot == `LeanSwe && um != `LeanSwe then
+        if isLeanSweMod um && !isLeanSweUmbrella um then
           let pkgU := dagPkgOf knownPkgs um
           if pkgU != pkgM then
             let roleU := dagRoleOf knownPkgs um
@@ -1604,7 +1627,7 @@ private def exprDelegatesToCanonicalDefault
       if u == defApiName || u == defOpsName || env.isProjectionFn u then true
       else
         let m := modOfConst env u
-        m.getRoot != `LeanSwe ||
+        !isLeanSweMod m ||
           match env.find? u with
           | some (.inductInfo _) | some (.ctorInfo _) => true
           | _ => m.components.contains `Types || m.components.contains `Model
@@ -1691,7 +1714,7 @@ private def isPureCapContainerCtor (env : Environment) (pkg ctorName : Name) : B
   | some (.ctorInfo ci) =>
     if !Lean.isStructure env ci.induct then false
     else
-      let m := modOfConst env ci.induct
+      let m := normalizeLeanSweMod (modOfConst env ci.induct)
       let typesMod := Name.str pkg "Types"
       let modelMod := Name.str pkg "Model"
       m == typesMod || m == modelMod ||
@@ -1746,7 +1769,7 @@ private def isAllowedInterfaceStateCellArg
                   else
                     let uMod := modOfConst env u
                     if uMod.getRoot == `Core then uMod != `Core.Assumptions
-                    else if uMod.getRoot == `LeanSwe then
+                    else if isLeanSweMod uMod then
                       let uPkg := dagPkgOf knownPkgs uMod
                       let uRole := dagRoleOf knownPkgs uMod
                       (uPkg == pkg || depSet.contains uPkg) && (uRole == .types || uRole == .model)
@@ -1815,7 +1838,7 @@ private def isAllowedInterfaceInitFn
           else
             let uMod := modOfConst env u
             if uMod.getRoot == `Core then uMod != `Core.Assumptions
-            else if uMod.getRoot == `LeanSwe then
+            else if isLeanSweMod uMod then
               let uPkg := dagPkgOf knownPkgs uMod
               let uRole := dagRoleOf knownPkgs uMod
               allowedPkgs.contains uPkg && (uRole == .types || uRole == .model)
@@ -1825,7 +1848,7 @@ private def isAllowedInterfaceInitFn
           else
             let uMod := modOfConst env u
             if uMod.getRoot == `Core then uMod != `Core.Assumptions
-            else if uMod.getRoot == `LeanSwe then
+            else if isLeanSweMod uMod then
               let uPkg := dagPkgOf knownPkgs uMod
               let uRole := dagRoleOf knownPkgs uMod
               if allowedPkgs.contains uPkg && (uRole == .types || uRole == .model) then true
@@ -1857,11 +1880,11 @@ private def checkGenericAeneasApiWiring (env : Environment) (pkg : Name) :
   let aeneasPrefix := Name.str pkg "Aeneas"
   let apiMod := Name.str aeneasPrefix "Api"
   let funsMod := Name.str aeneasPrefix "Funs"
-  let some apiIdx := env.header.moduleNames.findIdx? (· == apiMod) | return (#[], {})
+  let some apiIdx := env.header.moduleNames.findIdx? (fun m => normalizeLeanSweMod m == apiMod) | return (#[], {})
   let some apiData := env.header.moduleData[apiIdx]? | return (#[], {})
   let mut errs : Array String := #[]
   let mut bundles : Std.HashMap Name Name := {}
-  if !env.header.moduleNames.contains funsMod then
+  if !env.header.moduleNames.any (fun m => normalizeLeanSweMod m == funsMod) then
     return (#[s!"TRUSTED_CLOSURE_AENEAS_WIRING_MISMATCH: {apiMod} missing companion {funsMod}"], {})
   let mut foundBundle := false
   for c in apiData.constants do
@@ -1869,7 +1892,7 @@ private def checkGenericAeneasApiWiring (env : Environment) (pkg : Name) :
     if isPrivateOrInternal c.name || env.isProjectionFn c.name then continue
     let some stName := dv.type.consumeMData.getAppFn.consumeMData.constName? | continue
     if !Lean.isStructure env stName then continue
-    let stMod := modOfConst env stName
+    let stMod := normalizeLeanSweMod (modOfConst env stName)
     if !isNamePrefixComps aeneasPrefix.components stMod.components then continue
     foundBundle := true
     let some (.inductInfo iv) := env.find? stName | continue
@@ -1885,7 +1908,7 @@ private def checkGenericAeneasApiWiring (env : Environment) (pkg : Name) :
     for j in [0 : ci.numFields] do
       match (etaReduceExpr args[ci.numParams + j]!).consumeMData.constName? with
       | some exp =>
-        if modOfConst env exp != funsMod || (getExternAttrData? env exp).isSome ||
+        if normalizeLeanSweMod (modOfConst env exp) != funsMod || (getExternAttrData? env exp).isSome ||
             (Lean.Compiler.getImplementedBy? env exp).isSome then
           errs := errs.push s!"TRUSTED_CLOSURE_AENEAS_WIRING_MISMATCH: {c.name} field #{j} ({exp}) must reference {funsMod} without extern/implemented_by"
           allOk := false
@@ -1934,7 +1957,7 @@ private def checkManifestTrustedClosures
       let toMod := modOfConst env entry.toDeclName
       if isProjectModule m || isProjectModule origMod || isProjectModule thmMod || isProjectModule toMod then
         errs := errs.push s!"TRUSTED_CLOSURE_FORBIDDEN_CSIMP: {entry.fromDeclName} -> {entry.toDeclName} (thm={entry.thmName}, mod={m})"
-    if !isProjectModule m || m == `LeanSwe || !includeMod m then continue
+    if !isProjectModule m || isLeanSweUmbrella m || !includeMod m then continue
     let some data := env.header.moduleData[i]? | continue
     checkedMods := checkedMods + 1
     let isCore := m.getRoot == `Core
@@ -1943,14 +1966,14 @@ private def checkManifestTrustedClosures
     let spec? := if isCore then none else manifest.packages.get? pkg
     let isBoundary := spec?.map (·.externalBoundary) |>.getD false
     let isBoundaryIface := !isCore && role == .iface && isBoundary
-    let isAeneasMod := inVerifiedWorker && !isCore && (m.components.drop pkg.components.length).head? == some `Aeneas
+    let isAeneasMod := inVerifiedWorker && !isCore && ((normalizeLeanSweMod m).components.drop pkg.components.length).head? == some `Aeneas
     let allowedPkgs := transCache.getD pkg (({} : Std.HashSet Name).insert pkg)
 
     for imp in data.imports do
       let im := imp.module
       if im.getRoot == `Core then pure ()
-      else if im.getRoot == `LeanSwe then
-        if im == `LeanSwe || isCore then
+      else if isLeanSweMod im then
+        if isLeanSweUmbrella im || isCore then
           errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports {im}"
         else
           let impPkg := dagPkgOf knownPkgs im
@@ -2036,7 +2059,7 @@ private def checkManifestTrustedClosures
           cRoot == `LeanSearchClient || cRoot == `Plausible) then
         continue
     let cIsBoundaryIface :=
-      if cMod.getRoot == `LeanSwe && cMod != `LeanSwe then
+      if isLeanSweMod cMod && !isLeanSweUmbrella cMod then
         let cPkg := dagPkgOf knownPkgs cMod
         dagRoleOf knownPkgs cMod == .iface && (manifest.packages.get? cPkg |>.map (·.externalBoundary) |>.getD false)
       else false
@@ -2317,7 +2340,8 @@ private def collectPkgModelModules (env : Environment) (pkg : Name) : Std.HashSe
   let pfx := modelMod.toString ++ "."
   let mut mods : Std.HashSet Name := {}
   for m in env.header.moduleNames do
-    if m == modelMod || m.toString.startsWith pfx then
+    let nm := normalizeLeanSweMod m
+    if nm == modelMod || nm.toString.startsWith pfx then
       mods := mods.insert m
   return mods
 
@@ -2546,7 +2570,7 @@ private def constTransitivelyTouchesImplOrIface
     if seen.contains cur then continue
     seen := seen.insert cur
     let m := modOfConst env cur
-    if m.getRoot == `LeanSwe && m != `LeanSwe then
+    if isLeanSweMod m && !isLeanSweUmbrella m then
       let role := dagRoleOf knownPkgs m
       if role == .impl || role == .iface || role == .sysBridge then
         return true
@@ -2571,7 +2595,8 @@ private def hasPureFromSatisfiabilityWitness
   let proofsPfx := proofsMod.toString ++ "."
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
-    if !depModelMods.contains m && m != proofsMod && !m.toString.startsWith proofsPfx then
+    let nm := normalizeLeanSweMod m
+    if !depModelMods.contains m && nm != proofsMod && !nm.toString.startsWith proofsPfx then
       continue
     let some data := env.header.moduleData[i]? | continue
     for c in data.constants do
@@ -3310,7 +3335,7 @@ private def collectPropertyDecls (env : Environment) (pkg : Name) : MetaM (Bool 
   let mut foundMod := false
   let mut props : Array (Name × Expr) := #[]
   for h : idx in [0 : env.header.moduleNames.size] do
-    let pm := env.header.moduleNames[idx]
+    let pm := normalizeLeanSweMod env.header.moduleNames[idx]
     let ps := pm.toString
     if pm == propMod || ps.startsWith propPfx || pm == checksMod || ps.startsWith checksPfx then
       foundMod := true
@@ -3393,7 +3418,7 @@ private def auditPropertyObeysSynthesis
   let mut candidateAtoms : Array Expr := #[]
 
   if let some (.thmInfo tv) := env.find? obeysName then
-    if isPrivateName obeysName || modOfConst env obeysName != proofsMod then
+    if isPrivateName obeysName || normalizeLeanSweMod (modOfConst env obeysName) != proofsMod then
       errs := errs.push s!"INVALID_OBEYS_MODEL_DECL: {obeysName} must be a public theorem in {proofsMod}"
     let (badAx?, nextAx) ← (checkAxiomsOk obeysName).run axCache
     axCache := nextAx
@@ -3414,7 +3439,7 @@ private def auditPropertyObeysSynthesis
     let propsMod := Name.str pkg "Properties"
     let propsPfx := propsMod.toString ++ "."
     for h : i in [0 : env.header.moduleNames.size] do
-      let m := env.header.moduleNames[i]
+      let m := normalizeLeanSweMod env.header.moduleNames[i]
       let ms := m.toString
       if m != proofsMod && !ms.startsWith proofsPfx && m != propsMod && !ms.startsWith propsPfx then continue
       let some data := env.header.moduleData[i]? | continue
@@ -3570,8 +3595,10 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
   let mut checkedWiredPkgs : Nat := 0
   let mut checkedSynthPkgs : Nat := 0
   let mut modSet : Std.HashSet Name := {}
+  let mut normModSet : Std.HashSet Name := {}
   for m in env.header.moduleNames do
     modSet := modSet.insert m
+    normModSet := normModSet.insert (normalizeLeanSweMod m)
 
   if onlyPkg?.isNone then
     for kPkg in knownPkgs do
@@ -3584,14 +3611,16 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
   if onlyPkg?.isNone then
     for pkg in sortedPkgs do
       let pfxStr := pkg.toString ++ "."
-      let hasAnyMod := env.header.moduleNames.any fun m => m == pkg || m.toString.startsWith pfxStr
+      let hasAnyMod := env.header.moduleNames.any fun m =>
+        let nm := normalizeLeanSweMod m
+        nm == pkg || nm.toString.startsWith pfxStr
       if !hasAnyMod then
         hardErrors := hardErrors.push s!"MANIFEST_ORPHAN_PACKAGE: {pkg} in scripts/package_manifest.json has no compiled modules in LeanSwe"
 
   let mut ifaceHasPrivateExtern : Std.HashSet Name := {}
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
-    if m.getRoot != `LeanSwe || m == `LeanSwe then continue
+    if !isLeanSweMod m || isLeanSweUmbrella m then continue
     let pkg := dagPkgOf knownPkgs m
     if let some target := onlyPkg? then
       if pkg != target then continue
@@ -3644,7 +3673,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
 
       if !modSet.contains ifaceMod then
         mHard := mHard.push s!"MANIFEST_MISSING_INTERFACE: {pkg} lacks {ifaceMod}"
-      let hasModelMod := modSet.contains modelMod
+      let hasModelMod := normModSet.contains modelMod
       if !hasModelMod then
         let k := s!"MISSING_MODEL|{pkg}"
         mModelObs := recordManifestObs mModelObs k s!"MANIFEST_MISSING_MODEL: {pkg} lacks {modelMod}"
@@ -3662,7 +3691,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
         thmName? := some thmName
         match env.find? thmName with
         | some (.thmInfo tv) =>
-          if isPrivateName thmName || modOfConst env thmName != proofsMod then
+          if isPrivateName thmName || normalizeLeanSweMod (modOfConst env thmName) != proofsMod then
             mHard := mHard.push s!"INVALID_OBEYS_MODEL_DECL: {thmName} must be a public theorem in {proofsMod}"
           let (badAx?, nextAx) ← (checkAxiomsOk thmName).run axCache
           axCache := nextAx
@@ -3853,7 +3882,7 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
                 mHard := mHard.push s!"BOUNDARY_WIRING_UNSAFE: {bDef} must be safe"
               for u in dv.value.getUsedConstants do
                 let uMod := modOfConst env u
-                if uMod.getRoot == `LeanSwe then
+                if isLeanSweMod uMod then
                   let uPkg := dagPkgOf knownPkgs uMod
                   if uPkg != pkg && !depSet.contains uPkg then
                     mHard := mHard.push s!"BOUNDARY_UNMANIFESTED_DEP: {bDef} references {u} from undeclared dep {uPkg}"
@@ -4015,53 +4044,10 @@ private def hasCanonicalAeneasArgs (bundles : Std.HashMap Name Name) (prog : Exp
 
 private def resolveRepoLibDirs (libDir repoDir : System.FilePath) :
     IO (Bool × System.FilePath × List System.FilePath) := do
-  let hasProofsTree ← (repoDir / "proofs" / "LeanSwe").isDir
+  let hasProofsTree ← (repoDir / "proofs" / "LeanSweProofs").isDir
   let proofsLibDir := repoDir / "proofs" / ".lake" / "build" / "lib" / "lean"
   let libDirs := if hasProofsTree then [proofsLibDir, libDir] else [libDir]
   return (hasProofsTree, proofsLibDir, libDirs)
-
-private def isOleanArtifactName (s : String) : Bool :=
-  s.endsWith ".olean" || s.endsWith ".olean.server" || s.endsWith ".olean.private"
-
-private def withMergedOleanSearchPath
-    (libDirs : List System.FilePath) (k : Except String Unit → IO UInt32) : IO UInt32 := do
-  if libDirs.length <= 1 then
-    initSearchPath (← findSysroot) libDirs
-    return ← k (.ok ())
-  let mk ← IO.Process.output { cmd := "mktemp", args := #["-d", "/tmp/leanswe-prom-olean.XXXXXX"] }
-  if mk.exitCode != 0 then
-    return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: mktemp failed ({mk.stderr.trimAscii.toString})")
-  let mergedDir : System.FilePath := mk.stdout.trimAscii.toString
-  try
-    let mut seen : Std.HashMap String System.FilePath := {}
-    let mut byParent : Std.HashMap String (Array System.FilePath) := {}
-    for srcDir in libDirs do
-      if !(← srcDir.isDir) then continue
-      let absSrcDir ← IO.FS.realPath srcDir
-      let absPrefix := absSrcDir.toString ++ "/"
-      for entry in (← System.FilePath.walkDir absSrcDir) do
-        if ← entry.isDir then continue
-        let es := entry.toString
-        if !isOleanArtifactName es || !es.startsWith absPrefix then continue
-        let rel := (es.drop absPrefix.length).toString
-        if let some prev := seen.get? rel then
-          return ← k (.error s!"DUPLICATE_MODULE_OLEAN: {rel} exists in both {prev} and {entry}")
-        seen := seen.insert rel entry
-        let dst := mergedDir / rel
-        let parentStr := (dst.parent.getD mergedDir).toString
-        byParent := byParent.insert parentStr ((byParent.getD parentStr #[]).push entry)
-    for (parentStr, srcs) in byParent.toList do
-      IO.FS.createDirAll parentStr
-      let ln ← IO.Process.output {
-        cmd := "ln"
-        args := #["-s", "-t", parentStr] ++ srcs.map (·.toString)
-      }
-      if ln.exitCode != 0 then
-        return ← k (.error s!"MERGED_OLEAN_DIR_ERROR: ln -s failed for {parentStr} ({ln.stderr.trimAscii.toString})")
-    initSearchPath (← findSysroot) [mergedDir]
-    k (.ok ())
-  finally
-    try IO.FS.removeDirAll mergedDir catch _ => pure ()
 
 private def reachableModIndices (env : Environment) (startMod : Name) : Std.HashSet Nat :=
   Id.run do
@@ -4257,7 +4243,7 @@ private unsafe def auditPromisesEnv
             if let some badAx := badAx? then
               axErrs := axErrs.push s!"UNALLOWED_AXIOM_IN_MUTANT: {c.name} in {m} uses [{badAx}]"
         continue
-      let isPropsMod := m.getRoot == `LeanSwe && dagRoleOf knownPkgs m == .properties
+      let isPropsMod := isLeanSweMod m && dagRoleOf knownPkgs m == .properties
       for c in data.constants do
         let .thmInfo v := c | continue
         if isPrivateOrInternal c.name || auditE.isProjectionFn c.name then continue
@@ -4399,10 +4385,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       | .ok manifest =>
         let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
         let (_, _, libDirs) ← resolveRepoLibDirs libDir repoDir
-        return ← withMergedOleanSearchPath libDirs fun spRes => do
-        if let .error err := spRes then
-          IO.eprintln err
-          return 1
+        initSearchPath (← findSysroot) libDirs
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
         let pRep ← auditPromisesEnv libDirs repoDir testEnv (some manifest)
@@ -4435,7 +4418,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         initSearchPath (← findSysroot) [libDir]
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
-        let (errs, modCnt) ← checkManifestTrustedClosures repoDir testEnv manifest (fun m => m.getRoot == `LeanSwe)
+        let (errs, modCnt) ← checkManifestTrustedClosures repoDir testEnv manifest (fun m => isLeanSweMod m)
         IO.println s!"CLOSURE_AUDIT_TEST: modules={modCnt} errors={errs.size}"
         for e in errs do
           IO.eprintln e
@@ -4495,10 +4478,7 @@ unsafe def main (args : List String) : IO UInt32 := do
           unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
             IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
             return 1
-        return ← withMergedOleanSearchPath libDirs fun spRes => do
-        if let .error err := spRes then
-          IO.eprintln err
-          return 1
+        initSearchPath (← findSysroot) libDirs
         enableInitializersExecution
         let rootImports :=
           if hasProofsTree then #[{ module := `LeanSwe }, { module := `LeanSweProofs }]
@@ -4520,15 +4500,12 @@ unsafe def main (args : List String) : IO UInt32 := do
     match args.drop 1 with
     | [verifiedModStr, libDirStr, repoDirStr] =>
       let verifiedMod := verifiedModStr.toName
-      let verifiedPkg := verifiedMod.getPrefix
+      let verifiedPkg := (normalizeLeanSweMod verifiedMod).getPrefix
       let libDir : System.FilePath := libDirStr
       let repoDir : System.FilePath := repoDirStr
       let isVMod := isVerifiedOnlyMod verifiedMod
       let (_, _, libDirs) ← resolveRepoLibDirs libDir repoDir
-      return ← withMergedOleanSearchPath libDirs fun spRes => do
-      if let .error err := spRes then
-        IO.eprintln err
-        return 1
+      initSearchPath (← findSysroot) libDirs
       enableInitializersExecution
       let vEnv ← importModules #[{ module := verifiedMod }] {} (loadExts := true)
       for modName in vEnv.header.moduleNames do
@@ -4620,22 +4597,20 @@ unsafe def main (args : List String) : IO UInt32 := do
     IO.eprintln s!"MISSING_SOURCE_DIR: {leanSweDir} or {coreDir}"
     return 1
   let (hasProofsTree, proofsLibDir, libDirs) ← resolveRepoLibDirs libDir repoDir
-  let proofsLeanSweDir := repoDir / "proofs" / "LeanSwe"
+  let proofsLeanSweDir := repoDir / "proofs" / "LeanSweProofs"
   if hasProofsTree then
     unless ← (proofsLibDir / "LeanSweProofs.olean").pathExists do
       IO.eprintln s!"MISSING_OLEAN: LeanSweProofs ({proofsLibDir / "LeanSweProofs.olean"})"
       return 1
-  withMergedOleanSearchPath libDirs fun spRes => do
-  if let .error err := spRes then
-    IO.eprintln err
-    return 1
+  initSearchPath (← findSysroot) libDirs
 
   let mut verifiedRoots : Array Name := #[]
-  let leanSweDirs := if hasProofsTree then #[leanSweDir, proofsLeanSweDir] else #[leanSweDir]
-  for lsDir in leanSweDirs do
+  let leanSweDirs : Array (System.FilePath × Name) :=
+    if hasProofsTree then #[(leanSweDir, `LeanSwe), (proofsLeanSweDir, `LeanSweProofs)] else #[(leanSweDir, `LeanSwe)]
+  for (lsDir, rootMod) in leanSweDirs do
     for entry in (← System.FilePath.walkDir lsDir) do
       if !(← entry.isDir) && entry.fileName == some "Verified.lean" then
-        let vm := moduleNameUnderLeanSwe lsDir entry
+        let vm := moduleNameUnderRoot lsDir entry rootMod
         if !verifiedRoots.contains vm then
           verifiedRoots := verifiedRoots.push vm
   verifiedRoots := verifiedRoots.qsort fun a b => a.toString < b.toString
@@ -4744,7 +4719,7 @@ unsafe def main (args : List String) : IO UInt32 := do
     let l1Reach := reachableModIndices env `LeanSwe
     for idx in l1Reach do
       if let some m := env.header.moduleNames[idx]? then
-        if m == `LeanSweProofs || m.components.contains `Aeneas then
+        if m.getRoot == `LeanSweProofs || m.components.contains `Aeneas then
           errors := errors.push s!"LAYER1_CLOSURE_VIOLATION: LeanSwe transitively imports {m}"
           pubClosureErrs := pubClosureErrs + 1
         else if m.getRoot == `LeanSwe && m != `LeanSwe then
@@ -4760,14 +4735,15 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut seenSourceMods : Std.HashMap Name System.FilePath := {}
   let pushDiscovered (m : Name) (arr : Array Name) : Array Name :=
     if arr.contains m then arr else arr.push m
-  for lsDir in leanSweDirs do
+  for (lsDir, rootMod) in leanSweDirs do
     for entry in (← System.FilePath.walkDir lsDir) do
       if !(← entry.isDir) && entry.extension == some "lean" then
-        let modName := moduleNameUnderLeanSwe lsDir entry
-        if let some prev := seenSourceMods.get? modName then
-          errors := errors.push s!"DUPLICATE_MODULE_SOURCE: {modName} exists in both {prev} and {entry}"
+        let modName := moduleNameUnderRoot lsDir entry rootMod
+        let normMod := normalizeLeanSweMod modName
+        if let some prev := seenSourceMods.get? normMod then
+          errors := errors.push s!"DUPLICATE_MODULE_SOURCE: {normMod} exists in both {prev} and {entry}"
         else
-          seenSourceMods := seenSourceMods.insert modName entry
+          seenSourceMods := seenSourceMods.insert normMod entry
         extraProjectMods := pushDiscovered modName extraProjectMods
         if nameLastStr modName == "RuntimeTests" then
           runtimeTestMods := pushDiscovered modName runtimeTestMods
@@ -4923,7 +4899,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let mut mergedSynthObs := rawManifestRep.obeysSynthObs
       let mut baseSynthCnt := rawManifestRep.checkedSynthPkgs
       for vm in verifiedRoots do
-        let vPkg := vm.getPrefix
+        let vPkg := (normalizeLeanSweMod vm).getPrefix
         mergedModelObs := mergedModelObs.erase s!"MISSING_OBEYS_MODEL|{vPkg}"
         mergedHookObs := mergedHookObs.erase s!"MIDDLE_HOOK|{vPkg}"
         mergedSynthObs := mergedSynthObs.erase s!"OBEYS_SYNTH|{vPkg}"

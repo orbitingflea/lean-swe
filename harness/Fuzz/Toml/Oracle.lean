@@ -1,5 +1,5 @@
 import LeanSwe.Toml.Types
-import LeanSwe.Toml.Model
+import LeanSweProofs.Toml.Model
 import Fuzz.Toml.YearZero
 
 namespace Fuzz.Toml

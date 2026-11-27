@@ -1,7 +1,7 @@
 import LeanSwe.LinuxSyscall.Common.Types
 import LeanSwe.LinuxSyscall.Files.Types
-import LeanSwe.LinuxSyscall.Files.Model
-import LeanSwe.LinuxSyscall.Files.Model.Seed
+import LeanSweProofs.LinuxSyscall.Files.Model
+import LeanSweProofs.LinuxSyscall.Files.Model.Seed
 import LeanSwe.LinuxSyscall.Files.Interface
 import Fuzz.LinuxSyscall.Files.Strace
 import Fuzz.LinuxSyscall.Rng

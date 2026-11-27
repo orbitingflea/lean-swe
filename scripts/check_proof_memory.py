@@ -352,40 +352,12 @@ def main(argv: list[str] | None = None) -> int:
 
     env = load_lake_env(repo_root)
     env["LEAN_NUM_THREADS"] = "1"
-    merged_ctx = None
-    l1_lib = repo_root / ".lake" / "build" / "lib" / "lean"
-    l2_lib = repo_root / "proofs" / ".lake" / "build" / "lib" / "lean"
-    if (repo_root / "proofs" / "LeanSwe").is_dir() and l1_lib.is_dir() and l2_lib.is_dir():
-        import tempfile
-        merged_ctx = tempfile.TemporaryDirectory(prefix="leanswe-mem-olean-")
-        merged_root = Path(merged_ctx.name)
-        seen: dict[Path, Path] = {}
-        for src_dir in (l2_lib.resolve(), l1_lib.resolve()):
-            for p in sorted(src_dir.rglob("*")):
-                if p.is_dir():
-                    continue
-                if not (p.name.endswith(".olean") or p.name.endswith(".olean.server") or p.name.endswith(".olean.private")):
-                    continue
-                rel = p.relative_to(src_dir)
-                if rel in seen:
-                    merged_ctx.cleanup()
-                    print(f"DUPLICATE_MODULE_OLEAN: {rel} exists in both {seen[rel]} and {p}", file=sys.stderr)
-                    return 2
-                seen[rel] = p
-                dst = merged_root / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                dst.symlink_to(p)
-        env["LEAN_PATH"] = f"{merged_root}:{env['LEAN_PATH']}" if env.get("LEAN_PATH") else str(merged_root)
     h_lib = repo_root / "harness" / ".lake" / "build" / "lib" / "lean"
     h_env = {**env, "LEAN_PATH": f"{h_lib}:{env['LEAN_PATH']}" if env.get("LEAN_PATH") else str(h_lib)}
     lean_bin = shutil.which("lean", path=env.get("PATH")) or "lean"
     env_for = lambda f: h_env if f.startswith("harness/") else env
-    try:
-        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            rows = list(pool.map(lambda f: measure_file(lean_bin, env_for(f), repo_root, f, args.poll_interval, limit_mb), files))
-    finally:
-        if merged_ctx is not None:
-            merged_ctx.cleanup()
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        rows = list(pool.map(lambda f: measure_file(lean_bin, env_for(f), repo_root, f, args.poll_interval, limit_mb), files))
 
     ranked = sorted(
         rows,

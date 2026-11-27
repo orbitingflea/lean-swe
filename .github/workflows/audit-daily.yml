@@ -83,13 +83,17 @@ jobs:
         run: |
           python3 -c '
           from pathlib import Path
+          import shutil
           for lib, base, roots in (
               (Path(".lake/build/lib/lean"), Path("."), ("Core", "LeanSwe", "Fuzz")),
-              (Path("proofs/.lake/build/lib/lean"), Path("proofs"), ("LeanSwe",)),
+              (Path("proofs/.lake/build/lib/lean"), Path("proofs"), ("LeanSwe", "LeanSweProofs")),
               (Path("harness/.lake/build/lib/lean"), Path("harness"), ("Fuzz", "ModelMutants", "UnitTests")),
           ):
               for r in roots:
                   if not (lr := lib / r).exists(): continue
+                  if not (base / r).is_dir():
+                      shutil.rmtree(lr)
+                      continue
                   for o in list(lr.rglob("*.olean")):
                       if not (base / o.relative_to(lib).with_suffix(".lean")).is_file():
                           for ext in (".olean", ".olean.hash", ".olean.server", ".olean.private", ".ilean", ".ilean.hash", ".trace"): o.with_suffix(ext).unlink(missing_ok=True)
@@ -136,9 +140,9 @@ jobs:
           rm -rf "$RUNNER_TEMP/pf-regen"
           mkdir -p "$RUNNER_TEMP/pf-regen"
           (cd LeanSwe/PostFork/rust && charon cargo --preset aeneas --opaque postfork::sys --dest-file "$RUNNER_TEMP/pf-regen/postfork.llbc")
-          aeneas -backend lean -split-files -subdir LeanSwe.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
-          diff -u proofs/LeanSwe/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Types.lean"
-          diff -u proofs/LeanSwe/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSwe.PostFork.Aeneas/Funs.lean"
+          aeneas -backend lean -split-files -subdir LeanSweProofs.PostFork.Aeneas -use-lean-modules false -dest "$RUNNER_TEMP/pf-regen" "$RUNNER_TEMP/pf-regen/postfork.llbc"
+          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Types.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Types.lean"
+          diff -u proofs/LeanSweProofs/PostFork/Aeneas/Funs.lean "$RUNNER_TEMP/pf-regen/LeanSweProofs.PostFork.Aeneas/Funs.lean"
 
       - name: Run sandboxed lake check
         id: lake_check
@@ -148,34 +152,13 @@ jobs:
           lake -d proofs exe cache get 2>&1 | tee "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake check 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail LeanSwe.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          MERGED_OLEAN_DIR="$(mktemp -d "$RUNNER_TEMP/merged-olean.XXXXXX")"
+          LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d proofs build --wfail LeanSweProofs.PostFork.Verified 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           PROOFS_EXPORT_FILE="$(mktemp "$RUNNER_TEMP/proofs-export.XXXXXX.ndjson")"
-          trap 'rm -rf "$MERGED_OLEAN_DIR" "$PROOFS_EXPORT_FILE"' EXIT
-          python3 -B - "$MERGED_OLEAN_DIR" <<'PY'
-          import pathlib, sys
-          merged = pathlib.Path(sys.argv[1])
-          seen: dict[pathlib.Path, pathlib.Path] = {}
-          for src_root in (pathlib.Path("proofs/.lake/build/lib/lean").resolve(), pathlib.Path(".lake/build/lib/lean").resolve()):
-              for p in sorted(src_root.rglob("*")):
-                  if p.is_dir():
-                      continue
-                  if not (p.name.endswith(".olean") or p.name.endswith(".olean.server") or p.name.endswith(".olean.private")):
-                      continue
-                  rel = p.relative_to(src_root)
-                  if rel in seen:
-                      print(f"DUPLICATE_MODULE_OLEAN: {rel} exists in both {seen[rel]} and {p}", file=sys.stderr)
-                      sys.exit(2)
-                  seen[rel] = p
-                  dst = merged / rel
-                  dst.parent.mkdir(parents=True, exist_ok=True)
-                  dst.symlink_to(p)
-          PY
-          PROOFS_LEAN_PATH="$MERGED_OLEAN_DIR:$(lake -d proofs env printenv LEAN_PATH)"
+          trap 'rm -f "$PROOFS_EXPORT_FILE"' EXIT
           LEAN_PREFIX="$(lean --print-prefix)"
-          LEAN_PATH="$PROOFS_LEAN_PATH" "$LEAN_PREFIX/bin/leanexport" LeanSweProofs LeanSwe.PostFork.Verified > "$PROOFS_EXPORT_FILE"
+          lake -d proofs env "$LEAN_PREFIX/bin/leanexport" LeanSweProofs LeanSweProofs.PostFork.Verified > "$PROOFS_EXPORT_FILE"
           lake -d proofs check --from-export="$PROOFS_EXPORT_FILE" 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
-          rm -rf "$MERGED_OLEAN_DIR" "$PROOFS_EXPORT_FILE"
+          rm -f "$PROOFS_EXPORT_FILE"
           trap - EXIT
           LAKE_NO_CACHE=true LEAN_NUM_THREADS="$LEAN_JOBS" lake -d harness build --wfail ModelMutants UnitTests leanswe-fuzz 2>&1 | tee -a "$RUNNER_TEMP/lake_check.log"
           actual_syms=$(nm -u .lake/build/lib/libleanswe_postfork_rust.a | awk '$1 ~ /^[Uuwv]$/ { print $2 }' | sort -u)
