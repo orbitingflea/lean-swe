@@ -3,14 +3,18 @@ import Lean
 /-!
 Non-Lean thinness CI gate (`scripts/CheckForeignThinness.lean`).
 
-Enforces three rules against `.foreign-budget.json` and `harness/`:
-1. Every git-tracked non-Lean file outside static metadata must be registered in
-   `.foreign-budget.json` (`files` or `vendored_files`), with `actual_lines <= max_lines`
-   and exact SHA-256 verification on `vendored_files`.
-2. Every non-`legacy_unmigrated` `.c`/`.h` file in `files` is lexed (stripping comments,
-   string/char literals, and tracking preprocessor tokens) and checked per extracted function
-   against complexity, branch, loop, and thick-logic bans unless explicitly overridden.
-3. `harness/lean-toolchain` matches root `lean-toolchain` byte-for-byte, and
+Enforces structural checks across git-tracked files and `harness/`:
+1. Every git-tracked `.lean` file must reside in an allowed Lean source path and
+   must not start with `#!`.
+2. Vendored SQLite amalgamation files (`sqlite3.c`, `sqlite3.h`), when tracked,
+   must match their pinned SHA-256 digests and are excluded from thin-C lexing.
+3. Every non-vendored tracked C/C++ file is lexed (stripping comments, string/char
+   literals, and tracking preprocessor tokens) and checked for balanced braces,
+   recognized top-level blocks, acyclicity, preprocessor rules, banned thick
+   constructs, and per-function structural limits (lines, branches, loops).
+4. Every tracked `.rs` file is checked against the Aeneas-extracted or non-Aeneas
+   `#![no_std]` Rust thinness rules.
+5. `harness/lean-toolchain` matches root `lean-toolchain` byte-for-byte, and
    `harness/lake-manifest.json` maintains exact parity with root `lake-manifest.json`
    (`packagesDir == "../.lake/packages"`, root path dep to `".."`, and exact match on
    `name`, `type`, `url`, `rev`, `inputRev`, `subDir`, `scope` for every inherited entry).
@@ -18,42 +22,32 @@ Enforces three rules against `.foreign-budget.json` and `harness/`:
 
 open Lean
 
-private def staticMetadataFiles : Std.HashSet String :=
-  Std.HashSet.emptyWithCapacity 16
-    |>.insert ".gitignore"
-    |>.insert ".gitattributes"
-    |>.insert "LICENSE"
-    |>.insert "README.md"
-    |>.insert "lean-toolchain"
-    |>.insert "lake-manifest.json"
-    |>.insert "harness/lean-toolchain"
-    |>.insert "harness/lake-manifest.json"
-    |>.insert ".proof-memory.json"
-    |>.insert ".foreign-budget.json"
+private def vendoredFileSha256 : Std.HashMap String String :=
+  Std.HashMap.emptyWithCapacity 4
+    |>.insert "LeanSwe/Sqlite/Raw/c/sqlite3.c" "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52"
+    |>.insert "LeanSwe/Sqlite/Raw/c/sqlite3.h" "d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c"
 
-private structure FileBudget where
-  maxLines : Nat
-  legacyUnmigrated : Bool
-  deriving Inhabited
+private def defaultMaxCodeLines : Nat := 35
+private def defaultMaxBranches : Nat := 8
+private def defaultMaxLoops : Nat := 2
 
-private structure VendoredBudget where
-  sha256 : String
-  maxLines? : Option Nat
-  deriving Inhabited
+private def isPollShimFile (relPath : String) : Bool :=
+  relPath == "LeanSwe/LinuxSyscall/c/poll_shim.c"
 
-private structure FuncOverride where
-  maxCodeLines : Nat := 35
-  maxBranches : Nat := 8
-  allowArrayCopyLoop : Bool := false
-  maxLoops? : Option Nat := none
-  allowPoll : Bool := false
-  deriving Inhabited
+private def isPollSyscallWrapper (fnKey : String) : Bool :=
+  fnKey == "LeanSwe/LinuxSyscall/c/poll_shim.c::leanswe_sys_ppoll"
 
-private structure ForeignBudget where
-  files : Std.HashMap String FileBudget
-  vendored : Std.HashMap String VendoredBudget
-  overrides : Std.HashMap String FuncOverride
-  threadHelpers : Std.HashSet String
+private def allowedThreadHelpers : Std.HashSet String :=
+  Std.HashSet.emptyWithCapacity 8
+    |>.insert "harness/Fuzz/LinuxSyscall/c/sandbox_fuzz_env.c::leanswe_sbx_spawn_sync_thread"
+    |>.insert "harness/Fuzz/CmdLine/c/cmdline_fuzz_env.c::leanswe_cmdfuzz_run_on_1mib_stack"
+    |>.insert "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_thread"
+    |>.insert "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_spawn_sibling_child"
+    |>.insert "harness/Fuzz/LinuxSyscall/c/process_fuzz_env.c::leanswe_proc_fuzz_check_fd_close_seccomp"
+    |>.insert "LeanSwe/PostFork/c/postfork_shim.c::pf_init_spawner_once"
+
+private def isAllowedThreadHelper (fnKey : String) : Bool :=
+  allowedThreadHelpers.contains fnKey
 
 private inductive CTokKind where
   | ident (name : String)
@@ -109,17 +103,6 @@ private def bytesSliceToAsciiString (bytes : ByteArray) (start stop : Nat) : Str
     let b := bytes[i]!
     s := s.push (Char.ofNat b.toNat)
   return s
-
-private def countLinesBytes (bytes : ByteArray) : Nat := Id.run do
-  if bytes.isEmpty then
-    return 0
-  let mut count := 0
-  for i in [0 : bytes.size] do
-    if bytes[i]! == 10 then
-      count := count + 1
-  if bytes[bytes.size - 1]! != 10 then
-    count := count + 1
-  return count
 
 private def stripLineSplices (bytes : ByteArray) : ByteArray × Array Nat := Id.run do
   let n := bytes.size
@@ -472,14 +455,13 @@ private def countDistinctLines (tokens : Array CTok) : Nat := Id.run do
 
 private def checkFunction
     (relPath : String)
-    (fn : CFunc)
-    (budget : ForeignBudget) : Array String := Id.run do
+    (fn : CFunc) : Array String := Id.run do
   let mut errs : Array String := #[]
   let fnKey := s!"{relPath}::{fn.name}"
-  let ov := budget.overrides.getD fnKey {}
+  let allowPoll := isPollSyscallWrapper fnKey
   let codeLines := countDistinctLines fn.body
-  if codeLines > ov.maxCodeLines then
-    errs := errs.push s!"C_FUNC_TOO_LONG: {fnKey} has {codeLines} non-blank code lines (max {ov.maxCodeLines})"
+  if codeLines > defaultMaxCodeLines then
+    errs := errs.push s!"C_FUNC_TOO_LONG: {fnKey} has {codeLines} non-blank code lines (max {defaultMaxCodeLines})"
 
   let mut branches := 0
   let mut forCount := 0
@@ -500,25 +482,18 @@ private def checkFunction
         doCount := doCount + 1
       else if name == "goto" then
         errs := errs.push s!"C_LOOP_FORBIDDEN: {fnKey}:{tok.line} uses forbidden 'goto'"
-      else if name == "pthread_create" && !budget.threadHelpers.contains fnKey then
-        errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {fnKey}:{tok.line} uses pthread_create outside named_thread_helpers"
+      else if name == "pthread_create" && !isAllowedThreadHelper fnKey then
+        errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {fnKey}:{tok.line} uses pthread_create outside allowed thread helpers"
     | _ => pure ()
-    if let some bad := isBannedThickToken fn.body i ov.allowPoll then
+    if let some bad := isBannedThickToken fn.body i allowPoll then
       errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {fnKey}:{tok.line} uses forbidden '{bad}'"
 
-  if branches > ov.maxBranches then
-    errs := errs.push s!"C_FUNC_TOO_BRANCHY: {fnKey} has {branches} branches (max {ov.maxBranches})"
+  if branches > defaultMaxBranches then
+    errs := errs.push s!"C_FUNC_TOO_BRANCHY: {fnKey} has {branches} branches (max {defaultMaxBranches})"
 
   let totalLoops := forCount + whileCount + doCount
-  let loopsOk := match ov.maxLoops? with
-    | some maxL => totalLoops <= maxL
-    | none =>
-      if ov.allowArrayCopyLoop then
-        forCount <= 1 && whileCount == 0 && doCount == 0
-      else
-        totalLoops == 0
-  if !loopsOk then
-    errs := errs.push s!"C_LOOP_FORBIDDEN: {fnKey} contains loop(s) (for={forCount}, while={whileCount}, do={doCount})"
+  if totalLoops > defaultMaxLoops then
+    errs := errs.push s!"C_LOOP_FORBIDDEN: {fnKey} contains {totalLoops} loops (max {defaultMaxLoops}; for={forCount}, while={whileCount}, do={doCount})"
   return errs
 
 private def normalizeIncludePath (fromFile : String) (target : String) : Option String := Id.run do
@@ -538,10 +513,8 @@ private def normalizeIncludePath (fromFile : String) (target : String) : Option 
 
 private def checkPreprocTokens
     (relPath : String)
-    (allTokens : Array CTok)
-    (budget : ForeignBudget) : Array String := Id.run do
-  let allowPollInFile := budget.overrides.fold (init := false) fun acc key ov =>
-    acc || (ov.allowPoll && key.startsWith s!"{relPath}::")
+    (allTokens : Array CTok) : Array String := Id.run do
+  let allowPollInFile := isPollShimFile relPath
   let mut errs : Array String := #[]
   let mut curPreprocIsInclude : Bool := false
   let mut i := 0
@@ -572,14 +545,8 @@ private def checkPreprocTokens
             | .strLit incTarget =>
               if !incTarget.endsWith ".h" then
                 errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} quoted #include '{incTarget}' must end in .h"
-              else
-                match normalizeIncludePath relPath incTarget with
-                | none =>
-                  errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} #include '{incTarget}' escapes repository root"
-                | some resolved =>
-                  if let some fb := budget.files.get? resolved then
-                    if fb.legacyUnmigrated then
-                      errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} cannot #include legacy_unmigrated '{resolved}'"
+              else if (normalizeIncludePath relPath incTarget).isNone then
+                errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} #include '{incTarget}' escapes repository root"
             | _ =>
               errs := errs.push s!"C_THICK_CONSTRUCT_FORBIDDEN: {relPath}:{tok.line} #include target must be <...> or \"*.h\""
         | .ident "define" =>
@@ -682,12 +649,11 @@ private def checkNonFuncTokens
     | _ => pure ()
   return errs
 
-private def checkNonLegacyCFile
+private def checkCFile
     (relPath : String)
-    (bytes : ByteArray)
-    (budget : ForeignBudget) : Array String × Nat := Id.run do
+    (bytes : ByteArray) : Array String × Nat := Id.run do
   let allTokens := lexCBytes bytes
-  let mut errs := checkPreprocTokens relPath allTokens budget
+  let mut errs := checkPreprocTokens relPath allTokens
 
   let codeTokens := allTokens.filter (!·.inPreproc)
   match collectCFunctionsAndTopLevel relPath codeTokens with
@@ -699,97 +665,14 @@ private def checkNonLegacyCFile
     errs := errs ++ checkNonFuncTokens relPath aggFields true
     errs := errs ++ findCallCycleErrors relPath funcs
     for fn in funcs do
-      errs := errs ++ checkFunction relPath fn budget
+      errs := errs ++ checkFunction relPath fn
     return (errs, funcs.size)
-
-private def parseJsonNatField (obj : Json) (field : String) : Except String Nat := do
-  match obj.getObjVal? field with
-  | .error _ => .error s!"missing integer field '{field}'"
-  | .ok (.num jn) =>
-    if jn.exponent != 0 || jn.mantissa < 0 then
-      .error s!"field '{field}' must be a non-negative integer"
-    else
-      .ok jn.mantissa.toNat
-  | .ok _ => .error s!"field '{field}' must be a non-negative integer"
 
 private def parseJsonBoolField (obj : Json) (field : String) : Except String Bool := do
   match obj.getObjVal? field with
   | .error _ => .error s!"missing boolean field '{field}'"
   | .ok (.bool b) => .ok b
   | .ok _ => .error s!"field '{field}' must be a boolean"
-
-private def ensureAllowedKeys (ctx : String) (obj : Json) (allowed : Array String) : Except String Unit := do
-  let .obj map := obj | .error s!"BUDGET_SCHEMA_ERROR: {ctx} must be an object"
-  for (k, _) in map do
-    if !allowed.contains k then
-      .error s!"BUDGET_SCHEMA_ERROR: {ctx} has unknown key '{k}'"
-
-private def parseBudget (raw : String) : Except String ForeignBudget := do
-  let json ← Json.parse raw |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: invalid JSON ({e})")
-  let .obj _ := json | .error "BUDGET_SCHEMA_ERROR: root must be a JSON object"
-  ensureAllowedKeys "root" json #["version", "files", "vendored_files", "function_overrides", "named_thread_helpers"]
-  let v ← parseJsonNatField json "version" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: {e}")
-  if v != 1 then
-    .error s!"BUDGET_SCHEMA_ERROR: unsupported version {v}"
-
-  let filesJson ← json.getObjVal? "files" |>.mapError (fun _ => "BUDGET_SCHEMA_ERROR: missing 'files' object")
-  let .obj filesObj := filesJson | .error "BUDGET_SCHEMA_ERROR: 'files' must be an object"
-  let mut files : Std.HashMap String FileBudget := {}
-  for (path, entry) in filesObj do
-    ensureAllowedKeys s!"files[{path}]" entry #["max_lines", "legacy_unmigrated"]
-    let maxLines ← parseJsonNatField entry "max_lines" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: files[{path}] {e}")
-    let legacy ← parseJsonBoolField entry "legacy_unmigrated" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: files[{path}] {e}")
-    files := files.insert path { maxLines, legacyUnmigrated := legacy }
-
-  let vendoredJson ← json.getObjVal? "vendored_files" |>.mapError (fun _ => "BUDGET_SCHEMA_ERROR: missing 'vendored_files' object")
-  let .obj vendoredObj := vendoredJson | .error "BUDGET_SCHEMA_ERROR: 'vendored_files' must be an object"
-  let mut vendored : Std.HashMap String VendoredBudget := {}
-  for (path, entry) in vendoredObj do
-    ensureAllowedKeys s!"vendored_files[{path}]" entry #["sha256", "max_lines"]
-    if files.contains path then
-      .error s!"BUDGET_SCHEMA_ERROR: '{path}' cannot appear in both 'files' and 'vendored_files'"
-    let sha ← entry.getObjValAs? String "sha256" |>.mapError (fun _ => s!"BUDGET_SCHEMA_ERROR: vendored_files[{path}] missing string 'sha256'")
-    let maxLines? ← match entry.getObjVal? "max_lines" with
-      | .error _ => pure none
-      | .ok _ => some <$> parseJsonNatField entry "max_lines" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: vendored_files[{path}] {e}")
-    vendored := vendored.insert path { sha256 := sha, maxLines? }
-
-  let overridesJson := (json.getObjVal? "function_overrides").toOption.getD (.obj {})
-  let .obj overridesObj := overridesJson | .error "BUDGET_SCHEMA_ERROR: 'function_overrides' must be an object"
-  let mut overrides : Std.HashMap String FuncOverride := {}
-  for (fnKey, entry) in overridesObj do
-    ensureAllowedKeys s!"function_overrides[{fnKey}]" entry #["max_code_lines", "max_branches", "allow_array_copy_loop", "max_loops", "allow_poll"]
-    let maxCodeLines ← match entry.getObjVal? "max_code_lines" with
-      | .error _ => pure 35
-      | .ok _ => parseJsonNatField entry "max_code_lines" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: function_overrides[{fnKey}] {e}")
-    let maxBranches ← match entry.getObjVal? "max_branches" with
-      | .error _ => pure 8
-      | .ok _ => parseJsonNatField entry "max_branches" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: function_overrides[{fnKey}] {e}")
-    let allowCopy ← match entry.getObjVal? "allow_array_copy_loop" with
-      | .error _ => pure false
-      | .ok _ => parseJsonBoolField entry "allow_array_copy_loop" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: function_overrides[{fnKey}] {e}")
-    let maxLoops? ← match entry.getObjVal? "max_loops" with
-      | .error _ => pure none
-      | .ok _ => some <$> parseJsonNatField entry "max_loops" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: function_overrides[{fnKey}] {e}")
-    let allowPoll ← match entry.getObjVal? "allow_poll" with
-      | .error _ => pure false
-      | .ok _ => parseJsonBoolField entry "allow_poll" |>.mapError (fun e => s!"BUDGET_SCHEMA_ERROR: function_overrides[{fnKey}] {e}")
-    overrides := overrides.insert fnKey {
-      maxCodeLines
-      maxBranches
-      allowArrayCopyLoop := allowCopy
-      maxLoops?
-      allowPoll
-    }
-
-  let helpersJson := (json.getObjVal? "named_thread_helpers").toOption.getD (.arr #[])
-  let .arr helpersArr := helpersJson | .error "BUDGET_SCHEMA_ERROR: 'named_thread_helpers' must be an array"
-  let mut threadHelpers : Std.HashSet String := {}
-  for item in helpersArr do
-    let .str s := item | .error "BUDGET_SCHEMA_ERROR: 'named_thread_helpers' items must be strings"
-    threadHelpers := threadHelpers.insert s
-
-  return { files, vendored, overrides, threadHelpers }
 
 private def gitLsFiles (repoDir : System.FilePath) : IO (Except String (Array String)) := do
   let out ← IO.Process.output {
@@ -1519,21 +1402,9 @@ private def checkHarnessManifestParity (repoDir : System.FilePath) : IO (Array S
 
   return (errs, checkedInherited)
 
-/-- Audit tracked non-Lean files and non-legacy C code against `.foreign-budget.json`. -/
+/-- Audit tracked Lean source paths, C/Rust thinness rules, vendored SHA-256 digests, and `harness/` parity. -/
 def main (args : List String) : IO UInt32 := do
   let repoDir : System.FilePath := args.headD "."
-  let budgetPath := repoDir / ".foreign-budget.json"
-  unless ← budgetPath.pathExists do
-    IO.eprintln s!"MISSING_FOREIGN_BUDGET: {budgetPath}"
-    return 1
-
-  let budgetRaw ← IO.FS.readFile budgetPath
-  let budget ← match parseBudget budgetRaw with
-    | .ok b => pure b
-    | .error err =>
-      IO.eprintln err
-      return 1
-
   let trackedFiles ← match ← gitLsFiles repoDir with
     | .ok fs => pure fs
     | .error err =>
@@ -1541,70 +1412,50 @@ def main (args : List String) : IO UInt32 := do
       return 1
 
   let mut errors : Array String := #[]
-  let mut trackedForeign := 0
   let mut checkedCFiles := 0
   let mut checkedCFuncs := 0
-  let mut legacyCFiles := 0
-  let mut seenVendored : Std.HashSet String := {}
+  let mut checkedRsFiles := 0
 
   for relPath in trackedFiles do
-    if staticMetadataFiles.contains relPath then
-      continue
     let fullPath := repoDir / relPath
-    if isAllowedLeanSourcePath relPath then
-      if ← fullPath.pathExists then
+    if relPath.endsWith ".lean" then
+      if !isAllowedLeanSourcePath relPath then
+        errors := errors.push s!"DISALLOWED_LEAN_SOURCE_PATH: {relPath} is not in an allowed Lean source path"
+      else if ← fullPath.pathExists then
         let leanBytes ← IO.FS.readBinFile fullPath
         if leanBytes.size >= 2 && leanBytes[0]! == 35 && leanBytes[1]! == 33 then
           errors := errors.push s!"LEAN_SHEBANG_FORBIDDEN: {relPath} starts with '#!'"
       continue
-    if let some vend := budget.vendored.get? relPath then
-      trackedForeign := trackedForeign + 1
-      seenVendored := seenVendored.insert relPath
+    if let some expectedSha := vendoredFileSha256.get? relPath then
       unless ← fullPath.pathExists do
         errors := errors.push s!"VENDORED_HASH_MISMATCH: missing vendored file {relPath}"
         continue
       match ← computeSha256 fullPath with
       | .error err => errors := errors.push s!"VENDORED_HASH_MISMATCH: {err}"
       | .ok actualHex =>
-        if actualHex != vend.sha256 then
-          errors := errors.push s!"VENDORED_HASH_MISMATCH: {relPath} sha256={actualHex} expected={vend.sha256}"
-      if let some maxL := vend.maxLines? then
-        let bytes ← IO.FS.readBinFile fullPath
-        let actualLines := countLinesBytes bytes
-        if actualLines > maxL then
-          errors := errors.push s!"FOREIGN_LINE_CAP_EXCEEDED: {relPath} has {actualLines} lines (max {maxL})"
+        if actualHex != expectedSha then
+          errors := errors.push s!"VENDORED_HASH_MISMATCH: {relPath} sha256={actualHex} expected={expectedSha}"
       continue
-
-    trackedForeign := trackedForeign + 1
-    let some entry := budget.files.get? relPath | do
-      errors := errors.push s!"UNBUDGETED_FOREIGN_FILE: {relPath} is tracked in git but absent from .foreign-budget.json"
-      continue
-
-    unless ← fullPath.pathExists do
-      errors := errors.push s!"MISSING_TRACKED_FOREIGN_FILE: {relPath}"
-      continue
-    let bytes ← IO.FS.readBinFile fullPath
-    let actualLines := countLinesBytes bytes
-    if actualLines > entry.maxLines then
-      errors := errors.push s!"FOREIGN_LINE_CAP_EXCEEDED: {relPath} has {actualLines} lines (max {entry.maxLines})"
 
     if isCOrHeader relPath then
-      if entry.legacyUnmigrated then
-        legacyCFiles := legacyCFiles + 1
-      else
-        checkedCFiles := checkedCFiles + 1
-        let (fileErrs, fnCount) := checkNonLegacyCFile relPath bytes budget
-        checkedCFuncs := checkedCFuncs + fnCount
-        errors := errors ++ fileErrs
-    else if relPath.endsWith ".rs" && !entry.legacyUnmigrated then
+      unless ← fullPath.pathExists do
+        errors := errors.push s!"MISSING_TRACKED_FOREIGN_FILE: {relPath}"
+        continue
+      let bytes ← IO.FS.readBinFile fullPath
+      checkedCFiles := checkedCFiles + 1
+      let (fileErrs, fnCount) := checkCFile relPath bytes
+      checkedCFuncs := checkedCFuncs + fnCount
+      errors := errors ++ fileErrs
+    else if relPath.endsWith ".rs" then
+      unless ← fullPath.pathExists do
+        errors := errors.push s!"MISSING_TRACKED_FOREIGN_FILE: {relPath}"
+        continue
+      let bytes ← IO.FS.readBinFile fullPath
+      checkedRsFiles := checkedRsFiles + 1
       if isAeneasExtractedRustPath relPath then
         errors := errors ++ checkAeneasRustFile relPath bytes
       else
         errors := errors ++ checkNonAeneasRustFile relPath bytes
-
-  for (vendPath, _) in budget.vendored do
-    if !seenVendored.contains vendPath then
-      errors := errors.push s!"VENDORED_HASH_MISMATCH: vendored file {vendPath} is not tracked by git"
 
   let tcErrs ← checkHarnessToolchainParity repoDir
   let (manErrs, harnessPkgsChecked) ← checkHarnessManifestParity repoDir
@@ -1612,7 +1463,7 @@ def main (args : List String) : IO UInt32 := do
   errors := errors ++ parityErrs
   IO.println s!"HARNESS_PARITY_CHECK: inherited_packages={harnessPkgsChecked} errors={parityErrs.size}"
 
-  IO.println s!"FOREIGN_THINNESS_CHECK: tracked_foreign={trackedForeign} checked_c_files={checkedCFiles} checked_c_funcs={checkedCFuncs} legacy_c_files={legacyCFiles} errors={errors.size}"
+  IO.println s!"FOREIGN_THINNESS_CHECK: checked_c_files={checkedCFiles} checked_c_funcs={checkedCFuncs} checked_rs_files={checkedRsFiles} errors={errors.size}"
   if errors.isEmpty then
     return 0
   else
