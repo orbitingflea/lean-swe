@@ -11,7 +11,6 @@ package «lean-swe» where
     ⟨`autoImplicit, false⟩,
     ⟨`relaxedAutoImplicit, false⟩,
     ⟨`warningAsError, true⟩,
-    ⟨`weak.linter.missingDocs, true⟩,
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
