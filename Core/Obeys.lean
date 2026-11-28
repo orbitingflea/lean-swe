@@ -1,14 +1,5 @@
 namespace Core
 
-/-- Equality on `Except E α` up to diagnostic message text: `.ok` payloads match exactly,
-    while `.error` results agree on `kindOf` with a non-empty implementation `msgOf`. -/
-def EqUpToErrMsg {E K α : Type} (kindOf : E → K) (msgOf : E → String)
-    (actual expected : Except E α) : Prop :=
-  match actual, expected with
-  | .ok a, .ok b => a = b
-  | .error e₁, .error e₂ => kindOf e₁ = kindOf e₂ ∧ !(msgOf e₁).isEmpty
-  | _, _ => False
-
 /-- Pure 1-argument refinement predicate stating that `allowed x (impl x)` holds for all `x`. -/
 def ObeysPure {In Out : Type} (impl : In → Out) (allowed : In → Out → Prop) : Prop :=
   ∀ x : In, allowed x (impl x)
@@ -42,27 +33,6 @@ def ObeysPureEq3 {A B C Out : Type} (impl model : A → B → C → Out) : Prop 
 /-- Pure 4-argument deterministic refinement predicate stating that `impl a b c d = model a b c d` for all `a, b, c, d`. -/
 def ObeysPureEq4 {A B C D Out : Type} (impl model : A → B → C → D → Out) : Prop :=
   ObeysPure4 impl (fun a b c d y => y = model a b c d)
-
-/-- Pure 1-argument fallible refinement predicate stating exact `.ok` equality and `.error`
-    structural equality (`kindOf`) with non-empty implementation diagnostics (`msgOf`). -/
-def ObeysPureEqUpToErrMsg {In E K α : Type} (kindOf : E → K) (msgOf : E → String)
-    (impl model : In → Except E α) : Prop :=
-  ∀ x : In, EqUpToErrMsg kindOf msgOf (impl x) (model x)
-
-/-- Pure 2-argument fallible refinement up to diagnostic message text. -/
-def ObeysPureEqUpToErrMsg2 {A B E K α : Type} (kindOf : E → K) (msgOf : E → String)
-    (impl model : A → B → Except E α) : Prop :=
-  ∀ (a : A) (b : B), EqUpToErrMsg kindOf msgOf (impl a b) (model a b)
-
-/-- Pure 3-argument fallible refinement up to diagnostic message text. -/
-def ObeysPureEqUpToErrMsg3 {A B C E K α : Type} (kindOf : E → K) (msgOf : E → String)
-    (impl model : A → B → C → Except E α) : Prop :=
-  ∀ (a : A) (b : B) (c : C), EqUpToErrMsg kindOf msgOf (impl a b c) (model a b c)
-
-/-- Pure 4-argument fallible refinement up to diagnostic message text. -/
-def ObeysPureEqUpToErrMsg4 {A B C D E K α : Type} (kindOf : E → K) (msgOf : E → String)
-    (impl model : A → B → C → D → Except E α) : Prop :=
-  ∀ (a : A) (b : B) (c : C) (d : D), EqUpToErrMsg kindOf msgOf (impl a b c d) (model a b c d)
 
 /-- Injectivity of a nondeterministic renderer `render : Obj → Tape → Option Raw` up to `equiv`. -/
 def RenderInjectiveModulo {Obj Tape Raw : Type}
@@ -221,35 +191,6 @@ def ObeysStepFrom2.{u₁, u₂, u₃}
     ObeysStep proj rawWf (execRaw2 raw2) rawAllowed2 →
     ObeysStep (mapS ∘ proj) pkgWf (execPkg (mkApi raw1 raw2)) pkgAllowed
 
-/-- Construct `EqUpToErrMsg` on `.ok` values from payload equality. -/
-theorem EqUpToErrMsg.ok {E K α : Type} {kindOf : E → K} {msgOf : E → String}
-    {a b : α} (h : a = b) : EqUpToErrMsg kindOf msgOf (.ok a) (.ok b) :=
-  h
-
-/-- Construct `EqUpToErrMsg` on `.error` values from matching metadata and a non-empty message. -/
-theorem EqUpToErrMsg.error {E K α : Type} {kindOf : E → K} {msgOf : E → String}
-    {e₁ e₂ : E} (hKind : kindOf e₁ = kindOf e₂) (hMsg : !(msgOf e₁).isEmpty) :
-    @EqUpToErrMsg E K α kindOf msgOf (.error e₁) (.error e₂) :=
-  ⟨hKind, hMsg⟩
-
-/-- Exact equality implies `EqUpToErrMsg` whenever errors carry a non-empty message. -/
-theorem EqUpToErrMsg.of_eq {E K α : Type} {kindOf : E → K} {msgOf : E → String}
-    {actual expected : Except E α} (hEq : actual = expected)
-    (hMsg : ∀ e, expected = .error e → !(msgOf e).isEmpty) :
-    EqUpToErrMsg kindOf msgOf actual expected := by
-  subst hEq
-  cases actual with
-  | ok _ => rfl
-  | error e => exact ⟨rfl, hMsg e rfl⟩
-
-/-- Transitivity of `EqUpToErrMsg`. -/
-theorem EqUpToErrMsg.trans {E K α : Type} {kindOf : E → K} {msgOf : E → String}
-    {x y z : Except E α} (hxy : EqUpToErrMsg kindOf msgOf x y)
-    (hyz : EqUpToErrMsg kindOf msgOf y z) : EqUpToErrMsg kindOf msgOf x z := by
-  cases x <;> cases y <;> cases z <;> simp [EqUpToErrMsg] at hxy hyz ⊢
-  · exact ⟨hxy.1.trans hyz.1, hxy.2⟩
-  · exact hxy.trans hyz
-
 /-- Derive `ObeysInverseRender` from renderer injectivity plus `.ok` witness and `.error` completeness. -/
 theorem ObeysInverseRender.of_injective {Obj Tape Raw Err : Type}
     {parse : Raw → Except Err Obj} {render : Obj → Tape → Option Raw}
@@ -326,19 +267,6 @@ theorem ObeysPure.weaken {In Out : Type} {impl : In → Out} {r₁ r₂ : In →
 /-- Transitivity of deterministic `ObeysPureEq` contracts. -/
 theorem ObeysPureEq.trans {In Out : Type} {f g h : In → Out}
     (hfg : ObeysPureEq f g) (hgh : ObeysPureEq g h) : ObeysPureEq f h :=
-  fun x => (hfg x).trans (hgh x)
-
-/-- Upgrade an exact `ObeysPureEq` contract on fallible outputs to `ObeysPureEqUpToErrMsg`. -/
-theorem ObeysPureEq.toObeysPureEqUpToErrMsg {In E K α : Type}
-    {kindOf : E → K} {msgOf : E → String} {impl model : In → Except E α}
-    (hEq : ObeysPureEq impl model) (hMsg : ∀ x e, model x = .error e → !(msgOf e).isEmpty) :
-    ObeysPureEqUpToErrMsg kindOf msgOf impl model :=
-  fun x => EqUpToErrMsg.of_eq (hEq x) (hMsg x)
-
-/-- Transitivity of `ObeysPureEqUpToErrMsg`. -/
-theorem ObeysPureEqUpToErrMsg.trans {In E K α : Type} {kindOf : E → K} {msgOf : E → String}
-    {f g h : In → Except E α} (hfg : ObeysPureEqUpToErrMsg kindOf msgOf f g)
-    (hgh : ObeysPureEqUpToErrMsg kindOf msgOf g h) : ObeysPureEqUpToErrMsg kindOf msgOf f h :=
   fun x => (hfg x).trans (hgh x)
 
 /-- Strengthen the guard or weaken the transition relation of an `ObeysStep` contract. -/

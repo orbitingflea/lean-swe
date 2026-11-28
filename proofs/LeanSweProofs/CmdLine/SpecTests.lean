@@ -15,6 +15,34 @@ def pureIdCliOps : CliOpsM Id :=
     writeErr := fun _ => pure ()
     getEnv := fun _ => pure (.ok none) }
 
+/-- Simulated environment variable entry for `CliMockState`. -/
+inductive MockEnvValue where
+  /-- Environment variable is unset. -/
+  | unset
+  /-- Environment variable is set to `val`. -/
+  | set (val : String)
+  /-- Environment lookup fails with `err`. -/
+  | error (err : CmdLineError)
+  deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- Convert a `MockEnvValue` into the `Except CmdLineError (Option String)` returned by `CliOpsM.getEnv`. -/
+def MockEnvValue.toExcept : MockEnvValue → Except CmdLineError (Option String)
+  | .unset => .ok none
+  | .set val => .ok (some val)
+  | .error err => .error err
+
+/-- Deterministic in-memory mock state for verifying Layer 2 `CliOpsM (StateM CliMockState)`. -/
+structure CliMockState where
+  /-- Remaining lines to be returned sequentially by `readLine` (`[]` yields `none`). -/
+  stdinLines : List String := []
+  /-- Accumulated text written via `writeOut`. -/
+  stdout : String := ""
+  /-- Accumulated text written via `writeErr`. -/
+  stderr : String := ""
+  /-- Mock environment table supporting unset, set, and error entries. -/
+  env : List (String × MockEnvValue) := []
+  deriving Repr, BEq, DecidableEq, Inhabited
+
 /-- Deterministic `CliOpsM (StateM CliMockState)` backed by `CliMockState`. -/
 def mockCliOps : CliOpsM (StateM CliMockState) :=
   { readLine := fun s =>

@@ -6,13 +6,13 @@ for:
 1. `Core.Obeys` model-refinement verification and `RuntimeTests` retirement checks in
    `scripts/CheckAssumptions.lean`.
 2. `harness/` toolchain and manifest parity checks in `scripts/CheckForeignThinness.lean`.
-3. One-way transitive `.olean` import-DAG ratchet, `namespace <Pkg>.Model` inside `Proofs/`,
+3. One-way transitive `.olean` import-DAG audit, `namespace <Pkg>.Model` inside `Proofs/`,
    and no-proof-content signature checks in `scripts/CheckPromises.lean`.
 
 Compiles `scripts/CheckAssumptions.lean` and `scripts/CheckForeignThinness.lean` directly to
 isolated `/tmp` binaries, compiles a spliced driver over `scripts/CheckPromises.lean` that calls
 its real `auditImportDagEnv`, `mergeDagReports`, `encodeDagReportWireLines`,
-`decodeDagReportWireLines`, and `evaluateDagRatchetWith` helpers directly, verifies clean
+`decodeDagReportWireLines`, and `formatDagAuditErrors` helpers directly, verifies clean
 miniature baselines (`errors=0`), and injects focused negative mutants covering the targeted
 `Core.Obeys`/retirement rules and every harness-parity and import-DAG/no-proof-content
 diagnostic code, confirming each fails closed with non-zero exit status and the expected
@@ -526,7 +526,7 @@ private def runHarnessParitySelfTests (tmpRoot realRepo : System.FilePath) : IO 
     IO.FS.removeDirAll gitBaseDir
   IO.FS.removeDirAll baseDir
 
-private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO System.FilePath := do
+private def buildDagAuditDriver (tmpRoot realRepo : System.FilePath) : IO System.FilePath := do
   let src ← IO.FS.readFile (realRepo / "scripts" / "CheckPromises.lean")
   let marker := "unsafe def main (args : List String) : IO UInt32 := do"
   let parts := src.splitOn marker
@@ -564,12 +564,10 @@ private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO Syst
     "    }\n" ++
     "    let merged := mergeDagReports mainRep decoded\n" ++
     "    let mergedSamplesOk := merged.sigProofCounts.get? sKey == some (6, #[\"thm0\", \"thm1\", \"thm2\"])\n" ++
-    "    let okErrs := evaluateDagRatchetWith #[vKey] #[(sKey, 6)] merged\n" ++
-    "    let missErrs := evaluateDagRatchetWith #[] #[(sKey, 6)] merged\n" ++
-    "    let grewErrs := evaluateDagRatchetWith #[vKey] #[(sKey, 5)] merged\n" ++
-    "    let staleErrs := evaluateDagRatchetWith #[vKey] #[(sKey, 7)] merged\n" ++
-    "    if !decodedOk || !mergedSamplesOk || merged.checkedModules != 15 || !okErrs.isEmpty || missErrs.size != 1 || grewErrs.size != 1 || staleErrs.size != 1 then\n" ++
-    "      IO.eprintln s!\"IPC_ROUNDTRIP_FAIL: decodedOk={decodedOk} mergedSamplesOk={mergedSamplesOk} mods={merged.checkedModules} ok={okErrs.size} miss={missErrs.size} grew={grewErrs.size} stale={staleErrs.size}\"\n" ++
+    "    let errs := formatDagAuditErrors merged\n" ++
+    "    let emptyErrs := formatDagAuditErrors {}\n" ++
+    "    if !decodedOk || !mergedSamplesOk || merged.checkedModules != 15 || !emptyErrs.isEmpty || errs.size != 2 then\n" ++
+    "      IO.eprintln s!\"IPC_ROUNDTRIP_FAIL: decodedOk={decodedOk} mergedSamplesOk={mergedSamplesOk} mods={merged.checkedModules} empty={emptyErrs.size} errs={errs.size}\"\n" ++
     "      return 1\n" ++
     "    IO.println \"PASS_IPC_ROUNDTRIP\"\n" ++
     "    return 0\n" ++
@@ -601,38 +599,29 @@ private def buildDagRatchetDriver (tmpRoot realRepo : System.FilePath) : IO Syst
     "    return 0\n" ++
     "  let libDir : System.FilePath := args[0]!\n" ++
     "  let rootMods := (args[1]!.splitOn \",\").filter (!·.isEmpty) |>.toArray.map (·.toName)\n" ++
-    "  let edgeCsv := args[2]!\n" ++
-    "  let sigCsv := args[3]!\n" ++
-    "  let allowEdges := if edgeCsv.isEmpty then #[] else (edgeCsv.splitOn \";\").filter (!·.isEmpty) |>.toArray\n" ++
-    "  let mut allowSigs : Array (String × Nat) := #[]\n" ++
-    "  if !sigCsv.isEmpty then\n" ++
-    "    for item in (sigCsv.splitOn \";\").filter (!·.isEmpty) do\n" ++
-    "      match item.splitOn \"=\" with\n" ++
-    "      | [k, n] => allowSigs := allowSigs.push (k, n.toNat!)\n" ++
-    "      | _ => pure ()\n" ++
     "  initSearchPath (← findSysroot) [libDir]\n" ++
     "  enableInitializersExecution\n" ++
     "  let env ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)\n" ++
     "  let rep := auditImportDagEnv env (fun _ => true) {} {} true\n" ++
-    "  let errs := evaluateDagRatchetWith allowEdges allowSigs rep\n" ++
+    "  let errs := formatDagAuditErrors rep\n" ++
     "  IO.println s!\"DAG_TEST_SUMMARY: mods={rep.checkedModules} obs_edges={rep.violations.size} obs_sigs={rep.sigProofCounts.size} errors={errs.size}\"\n" ++
     "  for e in errs do\n" ++
     "    IO.eprintln e\n" ++
     "  return if errs.isEmpty then 0 else 1\n"
-  let leanFile := tmpRoot / "DagRatchetDriver.lean"
-  let cFile := tmpRoot / "DagRatchetDriver.c"
-  let binFile := tmpRoot / "dag-ratchet-driver"
+  let leanFile := tmpRoot / "DagAuditDriver.lean"
+  let cFile := tmpRoot / "DagAuditDriver.c"
+  let binFile := tmpRoot / "dag-audit-driver"
   IO.FS.writeFile leanFile driverSrc
   let r1 ← runCmd "lean" #["-R", tmpRoot.toString, "-c", cFile.toString, leanFile.toString] (some tmpRoot)
   if r1.exitCode != 0 then
-    throw (IO.userError s!"failed to compile DagRatchetDriver.lean:\n{r1.stdout}\n{r1.stderr}")
+    throw (IO.userError s!"failed to compile DagAuditDriver.lean:\n{r1.stdout}\n{r1.stderr}")
   let r2 ← runCmd "leanc" #["-O2", cFile.toString, "-o", binFile.toString, "-lleanshared"]
   if r2.exitCode != 0 then
-    throw (IO.userError s!"failed to link dag-ratchet-driver:\n{r2.stdout}\n{r2.stderr}")
+    throw (IO.userError s!"failed to link dag-audit-driver:\n{r2.stdout}\n{r2.stderr}")
   return binFile
 
 private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath) : IO Unit := do
-  let bin ← buildDagRatchetDriver tmpRoot realRepo
+  let bin ← buildDagAuditDriver tmpRoot realRepo
   let baseDir := tmpRoot / "dag_base"
   let root := baseDir / "repo"
   let libDir := baseDir / "lib"
@@ -680,7 +669,7 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
   for m in order do
     compileLeanMod root leanPath (root / s!"{m}.lean") (libDir / s!"{m}.olean")
 
-  let okOut ← runCmd bin.toString #[libDir.toString, "LeanSwe", "", ""]
+  let okOut ← runCmd bin.toString #[libDir.toString, "LeanSwe"]
   let okComb := okOut.stdout ++ "\n" ++ okOut.stderr
   if okOut.exitCode != 0 || (okComb.splitOn "errors=0").length <= 1 then
     throw (IO.userError s!"FAIL [dag_baseline_clean]: expected exit 0 errors=0:\n{okComb}")
@@ -696,15 +685,8 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     throw (IO.userError s!"FAIL [ctoridx_edge_cases]:\n{ctorOut.stdout}\n{ctorOut.stderr}")
   IO.println "PASS [ctoridx_edge_cases] -> isCompilerGeneratedCtorIdx + isAllowedCompilerUnsafeDef verified"
 
-  let staleOut ← runCmd bin.toString #[libDir.toString, "LeanSwe", "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl", ""]
-  expectOutputContains "dag_stale_edge_allowlist" "STALE_IMPORT_DAG_ALLOWLIST" staleOut
-
-  let staleSigZero ← runCmd bin.toString #[libDir.toString, "LeanSwe", "", "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.ghost=1"]
-  expectOutputContains "dag_stale_sig_allowlist_missing" "STALE_SIG_PROOF_ALLOWLIST" staleSigZero
-
   let runDagMut (name expectedCode : String)
       (mutate : System.FilePath → IO (Array String))
-      (edgeAllow sigAllow : String := "")
       (roots : String := "LeanSwe")
       (forbiddenCodes : Array String := #[]) : IO Unit := do
     let d := tmpRoot / s!"dag_{name}"
@@ -717,7 +699,7 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     let mods ← mutate rc
     for m in mods do
       compileLeanMod rc lp (rc / s!"{m}.lean") (lc / s!"{m}.olean")
-    let out ← runCmd bin.toString #[lc.toString, roots, edgeAllow, sigAllow]
+    let out ← runCmd bin.toString #[lc.toString, roots]
     expectOutputContains name expectedCode out forbiddenCodes
     IO.FS.removeDirAll d
 
@@ -777,14 +759,6 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import LeanSwe.MiniA.Interface\nimport LeanSwe.MiniB.Types\nnamespace LeanSwe.MiniB.SysBridge\ndef runB (t : BTag) : Nat := LeanSwe.MiniA.Internal.leakedHelper t\nend LeanSwe.MiniB.SysBridge\n"
     return #["LeanSwe/MiniA/Interface", "LeanSwe/MiniB/SysBridge"]
 
-  runDagMut "duplicate_dag_allowlist_entry" "DUPLICATE_DAG_ALLOWLIST_ENTRY"
-      (edgeAllow := "WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl;WITHIN|LeanSwe.MiniA.Model|LeanSwe.MiniA.Impl")
-      (roots := "LeanSwe.MiniA.Model")
-      (forbiddenCodes := #["STALE_IMPORT_DAG_ALLOWLIST", "DAG_WITHIN_VIOLATION"]) fun rc => do
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Model.lean")
-      "import LeanSwe.MiniA.Types\nimport LeanSwe.MiniA.Impl\nnamespace LeanSwe.MiniA.Model\ndef step (t : Tag) : Nat := Internal.stepImpl t\nend LeanSwe.MiniA.Model\n"
-    return #["LeanSwe/MiniA/Model"]
-
   runDagMut "proofs_namespace_model_public" "PROOF_MODEL_NS_FORBIDDEN" fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
       "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Model\ndef disguisedModel (n : Nat) : Nat := n\nend LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a LeanSwe.MiniA.step) := fun t => ⟨by cases t <;> rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
@@ -834,25 +808,6 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "allpass_sig_count_grew" "PROOF_CONST_IN_SIGNATURE_GREW"
-      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1") fun rc => do
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
-      "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a1 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\ntheorem proof_a2 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
-    return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
-
-  runDagMut "allpass_sig_count_stale" "STALE_SIG_PROOF_ALLOWLIST"
-      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=2") fun rc => do
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
-      "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a1 : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
-    return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
-
-  runDagMut "duplicate_sig_proof_allowlist_entry" "DUPLICATE_SIG_PROOF_ALLOWLIST_ENTRY"
-      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1;LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Proofs.fakeStep=1")
-      (forbiddenCodes := #["STALE_SIG_PROOF_ALLOWLIST", "PROOF_CONST_IN_SIGNATURE"]) fun rc => do
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
-      "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nnamespace LeanSwe.MiniA.Proofs\ndef fakeStep (t : Tag) : Nat := Model.step t\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
-    return #["LeanSwe/MiniA/Proofs", "LeanSwe"]
-
   runDagMut "other_helper_in_obeys_model_pure_eq" "PROOF_CONST_IN_SIGNATURE"
       (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
@@ -887,14 +842,6 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_reach : Core.CanReach (LeanSwe.MiniA.test_a Helper.fakeStep) := ⟨.a, rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
     return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
 
-  runDagMut "other_helper_sig_count_stale" "STALE_SIG_PROOF_ALLOWLIST"
-      (sigAllow := "LeanSwe.MiniA.Proofs|LeanSwe.MiniA.Helper|LeanSwe.MiniA.Helper.fakeStep=2") fun rc => do
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
-      "import LeanSwe.MiniA.Model\nnamespace LeanSwe.MiniA.Helper\ndef fakeStep (t : Tag) : Nat := Model.step t\nend LeanSwe.MiniA.Helper\n"
-    writeFileCreatingParents (rc / "LeanSwe/MiniA/Proofs.lean")
-      "import Core.Obeys\nimport LeanSwe.MiniA.Interface\nimport LeanSwe.MiniA.SpecTests\nimport LeanSwe.MiniA.Helper\nnamespace LeanSwe.MiniA.Proofs\ntheorem proof_a : Core.AllPass (LeanSwe.MiniA.test_a Helper.fakeStep) := fun _ => ⟨rfl, trivial⟩\nend LeanSwe.MiniA.Proofs\n"
-    return #["LeanSwe/MiniA/Helper", "LeanSwe/MiniA/Proofs", "LeanSwe"]
-
   runDagMut "testsupport_in_allpass_sig"
       "PROOF_CONST_IN_SIGNATURE: LeanSwe.MiniA.Proofs|LeanSwe.MiniA.TestSupport.Mock|LeanSwe.MiniA.TestSupport.fakeStep count=1"
       (forbiddenCodes := #["DAG_WITHIN_VIOLATION"]) fun rc => do
@@ -914,9 +861,7 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
     return #["LeanSwe/MiniA/HealthySys", "LeanSwe/MiniA/Proofs", "LeanSwe"]
 
   runDagMut "spectests_body_uses_other_helper" "PROOF_CONST_IN_SPEC"
-      (edgeAllow := "WITHIN|LeanSwe.MiniA.SpecTests|LeanSwe.MiniA.Helper")
-      (roots := "LeanSwe.MiniA.SpecTests")
-      (forbiddenCodes := #["DAG_WITHIN_VIOLATION", "STALE_IMPORT_DAG_ALLOWLIST"]) fun rc => do
+      (roots := "LeanSwe.MiniA.SpecTests") fun rc => do
     writeFileCreatingParents (rc / "LeanSwe/MiniA/Helper.lean")
       "namespace LeanSwe.MiniA.Helper\ndef helperVal : Nat := 7\nend LeanSwe.MiniA.Helper\n"
     writeFileCreatingParents (rc / "LeanSwe/MiniA/SpecTests.lean")
@@ -991,7 +936,7 @@ private def runImportDagSelfTests (tmpRoot realRepo realLibAbs : System.FilePath
       "import Core.NondetTest\nimport LeanSwe.PostFork.Aeneas.Model\nnamespace LeanSwe.PostFork\nopen Core Core.NondetTest\ndef test_pf {r} [NondetTest r] : r Unit := do\n  NondetTest.assert (LeanSwe.PostFork.Aeneas.Model.modelVal = 1)\nend LeanSwe.PostFork\n"
     for m in #["LeanSwe/PostFork/Types", "LeanSwe/PostFork/Aeneas/Model/World", "LeanSwe/PostFork/Aeneas/Model", "LeanSwe/PostFork/SpecTests"] do
       compileLeanMod rc lp (rc / s!"{m}.lean") (lc / s!"{m}.olean")
-    let out ← runCmd bin.toString #[lc.toString, "LeanSwe.PostFork.SpecTests", "", ""]
+    let out ← runCmd bin.toString #[lc.toString, "LeanSwe.PostFork.SpecTests"]
     let comb := out.stdout ++ "\n" ++ out.stderr
     if out.exitCode != 0 || (comb.splitOn "errors=0").length <= 1 then
       throw (IO.userError s!"FAIL [aeneas_model_submodule_ok]: expected exit 0 errors=0:\n{comb}")
@@ -3022,58 +2967,6 @@ def main (_ : List String) : IO UInt32 := do
          "end LeanSwe.MiniPure.Proofs\n")
       return #["LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
-    runPositiveCase base tmpRoot bin "obeys_model_upto_errmsg_accepted" fun mr => do
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
-        ("namespace LeanSwe.MiniPure\n" ++
-         "structure PureCfg where\n  delta : Nat\n" ++
-         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
-         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
-         "end LeanSwe.MiniPure\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
-        ("import LeanSwe.MiniPure.Types\n" ++
-         "namespace LeanSwe.MiniPure.Model\n" ++
-         "def evalModel (n : Nat) : Nat := n + 1\n" ++
-         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
-         "end LeanSwe.MiniPure.Model\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
-        ("import LeanSwe.MiniPure.Types\n" ++
-         "namespace LeanSwe.MiniPure.Internal\n" ++
-         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
-         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"empty input\" } else .ok s.length\n" ++
-         "end LeanSwe.MiniPure.Internal\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
-        ("import LeanSwe.MiniPure.Impl\n" ++
-         "namespace LeanSwe.MiniPure\n" ++
-         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
-         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
-         "end LeanSwe.MiniPure\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/SpecTests.lean")
-        ("import Core.NondetTest\nimport Core.Assumptions\n" ++
-         "import LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\n" ++
-         "namespace LeanSwe.MiniPure\nopen Core Core.NondetTest\n" ++
-         "def test_minipure_matches {r} [NondetTest r] (fn : Nat → Nat) : r Unit := do\n" ++
-         "  let x ← nondet Nat\n  NondetTest.assert (fn x = Model.evalModel x)\n" ++
-         "end LeanSwe.MiniPure\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
-        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
-         "namespace LeanSwe.MiniPure.Proofs\n" ++
-         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
-         "theorem never_bad : ∀ s : String, Core.NeverErrorKindPure ParseErr.kind ParseKind.bad (LeanSwe.MiniPure.parse s) := by\n" ++
-         "  intro s; unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl; by_cases h : s.isEmpty <;> simp [h, Core.NeverErrorKindPure]\n" ++
-         "theorem obeys_model :\n" ++
-         "    Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel ∧\n" ++
-         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind ParseErr.msg LeanSwe.MiniPure.parse LeanSwe.MiniPure.Model.parseModel := by\n" ++
-         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
-         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl LeanSwe.MiniPure.Model.parseModel\n" ++
-         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg]\n" ++
-         "end LeanSwe.MiniPure.Proofs\n")
-      return #[
-        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
-        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
-      ]
-
     runPositiveCase base tmpRoot bin "obeys_model_step_from_finally_accepted" fun mr => do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
         ("namespace LeanSwe.MiniPure\n" ++
@@ -3298,93 +3191,52 @@ def main (_ : List String) : IO UInt32 := do
          "end LeanSwe.MiniPure.Proofs\n")
       return #["LeanSwe/MiniPure/Proofs", "LeanSwe"]
 
-    runMutantCase base tmpRoot bin "obeys_upto_errmsg_proof_msg_rejected" "NON_MODEL_SPEC_IN_REFINES" fun mr => do
+    let writeInvRenderProofMsg (mr : MiniRepo) (isPrivate : Bool) : IO (Array String) := do
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
         ("namespace LeanSwe.MiniPure\n" ++
          "structure PureCfg where\n  delta : Nat\n" ++
-         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
-         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
+         "structure InvErr where\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
          "end LeanSwe.MiniPure\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
         ("import LeanSwe.MiniPure.Types\n" ++
          "namespace LeanSwe.MiniPure.Model\n" ++
          "def evalModel (n : Nat) : Nat := n + 1\n" ++
-         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
+         "def renderId (n : Nat) (_ : Unit) : Option Nat := some n\n" ++
+         "def wfId (_ : Nat) : Prop := True\n" ++
          "end LeanSwe.MiniPure.Model\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
         ("import LeanSwe.MiniPure.Types\n" ++
          "namespace LeanSwe.MiniPure.Internal\n" ++
          "def evalImpl (n : Nat) : Nat := n + 1\n" ++
-         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"nonempty\" } else .ok s.length\n" ++
+         "def parseIdImpl (n : Nat) : Except InvErr Nat := .ok n\n" ++
          "end LeanSwe.MiniPure.Internal\n")
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
         ("import LeanSwe.MiniPure.Impl\n" ++
          "namespace LeanSwe.MiniPure\n" ++
          "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
-         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
+         "def parseId (n : Nat) : Except InvErr Nat := Internal.parseIdImpl n\n" ++
          "end LeanSwe.MiniPure\n")
+      let vis := if isPrivate then "private " else ""
       writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
         ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
          "namespace LeanSwe.MiniPure.Proofs\n" ++
-         "def proofMsg (e : ParseErr) : String := e.msg\n" ++
+         s!"{vis}def proofMsg (e : InvErr) : String := e.msg\n" ++
          "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
          "theorem obeys_model :\n" ++
          "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
-         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind proofMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
-         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
-         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
-         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, proofMsg]\n" ++
+         "    Core.ObeysInverseRender LeanSwe.MiniPure.parseId Model.renderId Model.wfId Eq proofMsg :=\n" ++
+         "  ⟨fun _ => rfl, fun _ => ⟨trivial, ⟨(), rfl⟩, fun _ _ h => Option.some.inj h⟩⟩\n" ++
          "end LeanSwe.MiniPure.Proofs\n")
       return #[
         "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
         "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
       ]
 
-    runMutantCase base tmpRoot bin "obeys_upto_errmsg_private_proof_msg_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES" fun mr => do
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Types.lean")
-        ("namespace LeanSwe.MiniPure\n" ++
-         "structure PureCfg where\n  delta : Nat\n" ++
-         "inductive ParseKind\n  | empty\n  | bad\n  deriving Repr, BEq, DecidableEq\n" ++
-         "structure ParseErr where\n  kind : ParseKind\n  msg : String\n  deriving Repr, BEq, DecidableEq\n" ++
-         "end LeanSwe.MiniPure\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Model.lean")
-        ("import LeanSwe.MiniPure.Types\n" ++
-         "namespace LeanSwe.MiniPure.Model\n" ++
-         "def evalModel (n : Nat) : Nat := n + 1\n" ++
-         "def parseModel (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"\" } else .ok s.length\n" ++
-         "end LeanSwe.MiniPure.Model\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Impl.lean")
-        ("import LeanSwe.MiniPure.Types\n" ++
-         "namespace LeanSwe.MiniPure.Internal\n" ++
-         "def evalImpl (n : Nat) : Nat := n + 1\n" ++
-         "def parseImpl (s : String) : Except ParseErr Nat :=\n" ++
-         "  if s.isEmpty then .error { kind := .empty, msg := \"nonempty\" } else .ok s.length\n" ++
-         "end LeanSwe.MiniPure.Internal\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Interface.lean")
-        ("import LeanSwe.MiniPure.Impl\n" ++
-         "namespace LeanSwe.MiniPure\n" ++
-         "def eval (n : Nat) : Nat := Internal.evalImpl n\n" ++
-         "def parse (s : String) : Except ParseErr Nat := Internal.parseImpl s\n" ++
-         "end LeanSwe.MiniPure\n")
-      writeFileCreatingParents (mr.root / "LeanSwe/MiniPure/Proofs.lean")
-        ("import Core.Obeys\nimport LeanSwe.MiniPure.SpecTests\n" ++
-         "namespace LeanSwe.MiniPure.Proofs\n" ++
-         "private def proofMsg (e : ParseErr) : String := e.msg\n" ++
-         "theorem proof_minipure : Core.AllPass (LeanSwe.MiniPure.test_minipure_matches LeanSwe.MiniPure.eval) := fun _ => ⟨rfl, trivial⟩\n" ++
-         "theorem obeys_model :\n" ++
-         "    Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel ∧\n" ++
-         "    Core.ObeysPureEqUpToErrMsg ParseErr.kind proofMsg LeanSwe.MiniPure.parse Model.parseModel := by\n" ++
-         "  refine ⟨fun _ => rfl, fun s => ?_⟩\n" ++
-         "  unfold LeanSwe.MiniPure.parse LeanSwe.MiniPure.Internal.parseImpl Model.parseModel\n" ++
-         "  by_cases h : s.isEmpty <;> simp [h, Core.EqUpToErrMsg, proofMsg]\n" ++
-         "end LeanSwe.MiniPure.Proofs\n")
-      return #[
-        "LeanSwe/MiniPure/Types", "LeanSwe/MiniPure/Model", "LeanSwe/MiniPure/Impl",
-        "LeanSwe/MiniPure/Interface", "LeanSwe/MiniPure/SpecTests", "LeanSwe/MiniPure/Proofs", "LeanSwe"
-      ]
+    runMutantCase base tmpRoot bin "obeys_inverse_render_proof_msg_rejected" "NON_MODEL_SPEC_IN_REFINES"
+      fun mr => writeInvRenderProofMsg mr false
+
+    runMutantCase base tmpRoot bin "obeys_inverse_render_private_proof_msg_rejected" "LAMBDA_OR_PARTIAL_APP_IN_REFINES"
+      fun mr => writeInvRenderProofMsg mr true
 
     let psOk ← runCmd bin.toString #[base.libDir.toString, base.root.toString, "--print-sig", "LeanSwe.MiniPure"]
     if psOk.exitCode != 0 ||
@@ -3445,7 +3297,7 @@ def main (_ : List String) : IO UInt32 := do
       let okShapes :=
         psShapes.exitCode == 0 &&
         (st.splitOn "Core.ObeysPureEq LeanSwe.MiniPure.eval Model.evalModel").length > 1 &&
-        (st.splitOn "Core.ObeysPureEqUpToErrMsg LeanSwe.MiniPure.ParseErr.kind LeanSwe.MiniPure.ParseErr.msg LeanSwe.MiniPure.parse Model.parseModel").length > 1 &&
+        (st.splitOn "Core.ObeysPureEq LeanSwe.MiniPure.parse Model.parseModel").length > 1 &&
         (st.splitOn "<MANUAL_TEMPLATE_ARITY_0: LeanSwe.MiniPure.zeroArg").length > 1 &&
         (st.splitOn "<MANUAL_TEMPLATE_POLY: LeanSwe.MiniPure.polyShow").length > 1 &&
         (st.splitOn "Core.ObeysStepFromFinally <MAP_S> <RAW_WF> <EXEC_RAW> <RAW_ALLOWED> <PKG_WF> LeanSwe.MiniPure.Internal.mkApiM <EXEC_PKG> <PKG_ALLOWED>").length > 1 &&

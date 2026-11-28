@@ -27,11 +27,11 @@ private def copyFileOrDir (src dst : System.FilePath) : IO Unit := do
   if out.exitCode != 0 then throw (IO.userError s!"cp -a {src} {dst} failed: {out.stderr}")
 
 private def baselineRootsCsv : String :=
-  "LeanSwe.MiniPure.Proofs,LeanSwe.MiniErrMsg.Proofs,LeanSwe.MiniInv.Proofs,LeanSwe.MiniProp.Proofs,LeanSwe.MiniLeaf.Proofs,LeanSwe.MiniComp.Proofs"
+  "LeanSwe.MiniPure.Proofs,LeanSwe.MiniInv.Proofs,LeanSwe.MiniProp.Proofs,LeanSwe.MiniLeaf.Proofs,LeanSwe.MiniComp.Proofs"
 
 private def runAuditCase (bin libDir manifestPath : System.FilePath)
-    (rootsCsv modelAllow hookAllow : String) (synthAllow : String := "") : IO IO.Process.Output :=
-  runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manifestPath.toString, rootsCsv, modelAllow, hookAllow, synthAllow]
+    (rootsCsv : String) : IO IO.Process.Output :=
+  runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manifestPath.toString, rootsCsv]
 
 private def runPrintSigCase (bin libDir manifestPath : System.FilePath) (rootsCsv pkgStr : String) : IO IO.Process.Output :=
   runCmd bin.toString #["--internal-print-obeys-sig", libDir.toString, manifestPath.toString, rootsCsv, pkgStr]
@@ -73,7 +73,7 @@ def main (args : List String) : IO UInt32 := do
     let libDir := caseDir / "lib"
     let leanPath := s!"{libDir}:{realLibAbs}"
     mutate root libDir leanPath
-    let out ← runAuditCase bin libDir (root / "scripts/package_manifest.json") baselineRootsCsv "" "" ""
+    let out ← runAuditCase bin libDir (root / "scripts/package_manifest.json") baselineRootsCsv
     match expectedDiag? with
     | none => assertPass caseName out
     | some diag => assertFailWith caseName diag out

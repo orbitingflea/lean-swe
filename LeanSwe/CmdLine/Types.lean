@@ -252,34 +252,6 @@ abbrev CliOps := CliOpsM IO
 /-- Named custom value validators indexed by `ValueKind.custom` type name. -/
 abbrev CustomValidators := List (String × (String → Except String Unit))
 
-/-- Simulated environment variable entry for `CliMockState`. -/
-inductive MockEnvValue where
-  /-- Environment variable is unset. -/
-  | unset
-  /-- Environment variable is set to `val`. -/
-  | set (val : String)
-  /-- Environment lookup fails with `err`. -/
-  | error (err : CmdLineError)
-  deriving Repr, BEq, DecidableEq, Inhabited
-
-/-- Convert a `MockEnvValue` into the `Except CmdLineError (Option String)` returned by `CliOpsM.getEnv`. -/
-def MockEnvValue.toExcept : MockEnvValue → Except CmdLineError (Option String)
-  | .unset => .ok none
-  | .set val => .ok (some val)
-  | .error err => .error err
-
-/-- Deterministic in-memory mock state for verifying Layer 2 `CliOpsM (StateM CliMockState)`. -/
-structure CliMockState where
-  /-- Remaining lines to be returned sequentially by `readLine` (`[]` yields `none`). -/
-  stdinLines : List String := []
-  /-- Accumulated text written via `writeOut`. -/
-  stdout : String := ""
-  /-- Accumulated text written via `writeErr`. -/
-  stderr : String := ""
-  /-- Mock environment table supporting unset, set, and error entries. -/
-  env : List (String × MockEnvValue) := []
-  deriving Repr, BEq, DecidableEq, Inhabited
-
 /-- Public operations exported by `LeanSwe.CmdLine`, parameterized over effect monad `m`. -/
 structure CmdLineApiM (m : Type → Type) where
   /-- Computable check deciding whether `spec` satisfies `ValidSpec`. -/

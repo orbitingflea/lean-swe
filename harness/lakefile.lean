@@ -35,17 +35,8 @@ private def rootLeanSwePkg : FetchM Package := do
     | error "required package 'lean-swe' not found in workspace"
   return pkg
 
-private def buildFdBoxObj (pkg : NPackage __name__) (rootDir : System.FilePath) (tag : String) :
-    FetchM (Job System.FilePath) := do
-  let cDir := rootDir / "LeanSwe" / "LinuxSyscall" / "c"
-  let hdrJob ← inputTextFile (cDir / "fd_box.h")
-  let srcJob ← inputTextFile (cDir / "fd_box.c")
-  let deps := Job.collectArray #[hdrJob, srcJob]
-  let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "c" / s!"linux_fd_box_{tag}.o"
-  buildO oFile (deps.map fun _ => cDir / "fd_box.c")
-    #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
+private def fetchRootFdBoxObj (rootPkg : Package) : FetchM (Job System.FilePath) :=
+  (Target.mk (.packageTarget .anonymous `linux_fd_box.o) : Target System.FilePath).fetchIn rootPkg
 
 extern_lib «leanswe_envvars_fuzz» pkg := do
   let oFile := pkg.buildDir / "c" / "envvars_fuzz_env.o"
@@ -69,7 +60,7 @@ extern_lib «leanswe_linux_process_fuzz_env» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => fDir / "process_fuzz_env.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "proc_fuzz"
+  let fdBoxJob ← fetchRootFdBoxObj rootPkg
   let name := nameToStaticLib "leanswe_linux_process_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
@@ -85,7 +76,7 @@ extern_lib «leanswe_sandbox_fuzz_env» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => fDir / "sandbox_fuzz_env.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "sbx_fuzz"
+  let fdBoxJob ← fetchRootFdBoxObj rootPkg
   let name := nameToStaticLib "leanswe_sandbox_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
@@ -146,7 +137,7 @@ extern_lib «leanswe_poll_fuzz_env» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => fDir / "poll_fuzz_env.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg rootPkg.dir "poll_fuzz"
+  let fdBoxJob ← fetchRootFdBoxObj rootPkg
   let name := nameToStaticLib "leanswe_poll_fuzz_env"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 

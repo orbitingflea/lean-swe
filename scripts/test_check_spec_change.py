@@ -346,7 +346,6 @@ class PackageManifestTests(unittest.TestCase):
                 "deps": [],
                 "fuzz_suite": "float",
                 "external_boundary": False,
-                "err_msg_opaque": True,
                 "spec_style": "inverse_render",
             },
             "LeanSwe.SupportDir": {
@@ -680,6 +679,21 @@ class PackageManifestTests(unittest.TestCase):
             res = self._run_cli(repo, "HEAD~1", "HEAD", "--label", "spec-change")
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("MANIFEST_CHECK: failed", res.stderr)
+
+    def test_removing_retired_manifest_key_with_strengthening_requires_spec_change(self) -> None:
+        base = copy.deepcopy(self.BASE_MANIFEST)
+        base["packages"]["LeanSwe.PurePkg"]["err_msg_opaque"] = True
+        head = copy.deepcopy(self.BASE_MANIFEST)
+        head["packages"]["LeanSwe.PurePkg"]["external_boundary"] = True
+        head["packages"]["LeanSwe.PurePkg"]["deps"] = ["LeanSwe.SupportDir"]
+        label, reason = check_spec_change.classify_package_manifest_texts(
+            _dump(base),
+            _dump(head),
+            {"LeanSwe.Demo", "LeanSwe.PurePkg", "LeanSwe.SupportDir"},
+        )
+        self.assertEqual(label, check_spec_change.LABEL_CHANGE)
+        self.assertIn("removed unknown key(s)", reason)
+        self.assertIn("err_msg_opaque", reason)
 
 
 if __name__ == "__main__":
