@@ -11,7 +11,6 @@ package «lean-swe» where
     ⟨`autoImplicit, false⟩,
     ⟨`relaxedAutoImplicit, false⟩,
     ⟨`warningAsError, true⟩,
-    ⟨`weak.linter.missingDocs, true⟩,
     ⟨`weak.linter.unusedVariables, true⟩
   ]
 
@@ -23,13 +22,13 @@ lean_lib Core where
 lean_lib LeanSwe where
   globs := #[.one `LeanSwe, .submodules `LeanSwe]
 
-private def buildFdBoxObj (pkg : NPackage __name__) (tag : String) : FetchM (Job System.FilePath) := do
+target linux_fd_box.o pkg : System.FilePath := do
   let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
   let hdrJob ← inputTextFile (cDir / "fd_box.h")
   let srcJob ← inputTextFile (cDir / "fd_box.c")
   let deps := Job.collectArray #[hdrJob, srcJob]
   let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "c" / s!"linux_fd_box_{tag}.o"
+  let oFile := pkg.buildDir / "c" / "linux_fd_box.o"
   buildO oFile (deps.map fun _ => cDir / "fd_box.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
@@ -80,7 +79,7 @@ extern_lib «leanswe_linux_process» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => cDir / "process_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg "proc"
+  let fdBoxJob ← linux_fd_box.o.fetch
   let name := nameToStaticLib "leanswe_linux_process"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
@@ -94,7 +93,7 @@ extern_lib «leanswe_linux_files» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => cDir / "files_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg "files"
+  let fdBoxJob ← linux_fd_box.o.fetch
   let name := nameToStaticLib "leanswe_linux_files"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
 
@@ -118,22 +117,9 @@ extern_lib «leanswe_linux_poll» pkg := do
   let oJob ← buildO oFile (deps.map fun _ => cDir / "poll_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg "poll"
+  let fdBoxJob ← linux_fd_box.o.fetch
   let name := nameToStaticLib "leanswe_linux_poll"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]
-
-extern_lib «leanswe_linux_fd_box» pkg := do
-  let cDir := pkg.dir / "LeanSwe" / "LinuxSyscall" / "c"
-  let hdrJob ← inputTextFile (cDir / "fd_box.h")
-  let srcJob ← inputTextFile (cDir / "fd_box.c")
-  let deps := Job.collectArray #[hdrJob, srcJob]
-  let lean ← getLeanInstall
-  let oFile := pkg.buildDir / "c" / "linux_fd_box.o"
-  let oJob ← buildO oFile (deps.map fun _ => cDir / "fd_box.c")
-    #["-I", lean.includeDir.toString, "-I", cDir.toString]
-    #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let name := nameToStaticLib "leanswe_linux_fd_box"
-  buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
 extern_lib «leanswe_postfork» pkg := do
   let oFile := pkg.buildDir / "c" / "postfork_shim.o"
@@ -145,6 +131,6 @@ extern_lib «leanswe_postfork» pkg := do
   let oJob ← buildO oFile (depsJob.map fun _ => cDir / "postfork_shim.c")
     #["-I", lean.includeDir.toString, "-I", cDir.toString]
     #["-O2", "-DNDEBUG", "-DLEAN_EXPORTING", "-fPIC", "-fvisibility=hidden", "-Wall", "-Wextra", "-Werror", "-pthread"]
-  let fdBoxJob ← buildFdBoxObj pkg "postfork"
+  let fdBoxJob ← linux_fd_box.o.fetch
   let name := nameToStaticLib "leanswe_postfork"
   buildStaticLib (pkg.staticLibDir / name) #[oJob, fdBoxJob]

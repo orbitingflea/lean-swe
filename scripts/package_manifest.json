@@ -81,7 +81,6 @@
       "deps": [],
       "fuzz_suite": "json",
       "external_boundary": false,
-      "err_msg_opaque": true,
       "spec_style": "inverse_render"
     },
     "LeanSwe.LinuxSyscall.Common": {
@@ -136,7 +135,6 @@
       "deps": [],
       "fuzz_suite": "float",
       "external_boundary": false,
-      "err_msg_opaque": true,
       "spec_style": "pure_eq"
     },
     "LeanSwe.PostFork": {
@@ -180,7 +178,6 @@
       "purity": "pure",
       "deps": [],
       "external_boundary": false,
-      "err_msg_opaque": true,
       "spec_style": "pure_eq"
     },
     "LeanSwe.SlotPool": {
@@ -206,7 +203,6 @@
       "purity": "pure",
       "deps": [],
       "external_boundary": false,
-      "err_msg_opaque": true,
       "spec_style": "pure_eq"
     },
     "LeanSwe.TempDir": {
@@ -239,7 +235,6 @@
       ],
       "fuzz_suite": "toml",
       "external_boundary": false,
-      "err_msg_opaque": true,
       "spec_style": "inverse_render"
     },
     "LeanSwe.Uuid": {

@@ -45,8 +45,7 @@ private def symlinkCoreLib (realLibDir targetLibDir : System.FilePath) : IO Unit
 private def baselineManifestJson : String :=
   "{\n  \"version\": 1,\n  \"packages\": {\n" ++
   "    \"LeanSwe.MiniPure\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"spec_style\": \"pure_eq\"},\n" ++
-  "    \"LeanSwe.MiniErrMsg\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"err_msg_opaque\": true, \"spec_style\": \"pure_eq\"},\n" ++
-  "    \"LeanSwe.MiniInv\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"err_msg_opaque\": true, \"spec_style\": \"inverse_render\"},\n" ++
+  "    \"LeanSwe.MiniInv\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false, \"spec_style\": \"inverse_render\"},\n" ++
   "    \"LeanSwe.MiniProp\": {\"kind\": \"property\", \"purity\": \"pure\", \"deps\": [], \"external_boundary\": false},\n" ++
   "    \"LeanSwe.MiniLeaf\": {\"kind\": \"model\", \"purity\": \"nondet_io\", \"deps\": [], \"external_boundary\": true, \"fuzz_suite\": \"minileaf\", \"spec_style\": \"state_step\"},\n" ++
   "    \"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false, \"spec_style\": \"state_step\"}\n" ++
@@ -60,18 +59,6 @@ private def baselineFiles : Array (String × String) := #[
   ("LeanSwe/MiniPure/Proofs.lean",
     "import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\n" ++
     "theorem obeys_model : Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n"),
-  ("LeanSwe/MiniErrMsg/Types.lean", "namespace LeanSwe.MiniErrMsg\ninductive ErrKind where | zero deriving DecidableEq\nstructure MiniErr where\n  kind : ErrKind\n  message : String\nend LeanSwe.MiniErrMsg\n"),
-  ("LeanSwe/MiniErrMsg/Model.lean",
-    "import LeanSwe.MiniErrMsg.Types\nnamespace LeanSwe.MiniErrMsg.Model\n" ++
-    "def check (n : Nat) : Except MiniErr Nat := if n == 0 then .error { kind := .zero, message := \"model\" } else .ok n\nend LeanSwe.MiniErrMsg.Model\n"),
-  ("LeanSwe/MiniErrMsg/Impl.lean",
-    "import LeanSwe.MiniErrMsg.Types\nnamespace LeanSwe.MiniErrMsg.Internal\n" ++
-    "def checkImpl (n : Nat) : Except MiniErr Nat := if n == 0 then .error { kind := .zero, message := \"impl\" } else .ok n\nend LeanSwe.MiniErrMsg.Internal\n"),
-  ("LeanSwe/MiniErrMsg/Interface.lean", "import LeanSwe.MiniErrMsg.Impl\nnamespace LeanSwe.MiniErrMsg\ndef check (n : Nat) : Except MiniErr Nat := Internal.checkImpl n\nend LeanSwe.MiniErrMsg\n"),
-  ("LeanSwe/MiniErrMsg/Proofs.lean",
-    "import Core.Obeys\nimport LeanSwe.MiniErrMsg.Model\nimport LeanSwe.MiniErrMsg.Interface\nnamespace LeanSwe.MiniErrMsg.Proofs\n" ++
-    "theorem obeys_model : Core.ObeysPureEqUpToErrMsg MiniErr.kind MiniErr.message LeanSwe.MiniErrMsg.check LeanSwe.MiniErrMsg.Model.check := by\n" ++
-    "  intro n; cases n with | zero => exact ⟨rfl, by decide⟩ | succ _ => rfl\nend LeanSwe.MiniErrMsg.Proofs\n"),
   ("LeanSwe/MiniInv/Types.lean", "namespace LeanSwe.MiniInv\nstructure InvErr where\n  message : String\nend LeanSwe.MiniInv\n"),
   ("LeanSwe/MiniInv/Model.lean", "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Model\ndef render (n : Nat) (_ : Unit) : Option Nat := some n\ndef wf (_ : Nat) : Prop := True\ndef equiv (a b : Nat) : Prop := a = b\nend LeanSwe.MiniInv.Model\n"),
   ("LeanSwe/MiniInv/Impl.lean", "import LeanSwe.MiniInv.Types\nnamespace LeanSwe.MiniInv.Internal\ndef parseImpl (n : Nat) : Except InvErr Nat := .ok n\nend LeanSwe.MiniInv.Internal\n"),
@@ -110,7 +97,6 @@ private def baselineFiles : Array (String × String) := #[
 
 private def baselineBuildOrder : Array String := #[
   "LeanSwe/MiniPure/Types.lean", "LeanSwe/MiniPure/Model.lean", "LeanSwe/MiniPure/Impl.lean", "LeanSwe/MiniPure/Interface.lean", "LeanSwe/MiniPure/Proofs.lean",
-  "LeanSwe/MiniErrMsg/Types.lean", "LeanSwe/MiniErrMsg/Model.lean", "LeanSwe/MiniErrMsg/Impl.lean", "LeanSwe/MiniErrMsg/Interface.lean", "LeanSwe/MiniErrMsg/Proofs.lean",
   "LeanSwe/MiniInv/Types.lean", "LeanSwe/MiniInv/Model.lean", "LeanSwe/MiniInv/Impl.lean", "LeanSwe/MiniInv/Interface.lean", "LeanSwe/MiniInv/Proofs.lean",
   "LeanSwe/MiniProp/Types.lean", "LeanSwe/MiniProp/Properties.lean", "LeanSwe/MiniProp/Proofs.lean",
   "LeanSwe/MiniLeaf/Types.lean", "LeanSwe/MiniLeaf/Model.lean", "LeanSwe/MiniLeaf/Impl.lean", "LeanSwe/MiniLeaf/Interface.lean", "LeanSwe/MiniLeaf/Proofs.lean",
@@ -118,7 +104,7 @@ private def baselineBuildOrder : Array String := #[
 ]
 
 private def baselineRootsCsv : String :=
-  "LeanSwe.MiniPure.Proofs,LeanSwe.MiniErrMsg.Proofs,LeanSwe.MiniInv.Proofs,LeanSwe.MiniProp.Proofs,LeanSwe.MiniLeaf.Proofs,LeanSwe.MiniComp.Proofs"
+  "LeanSwe.MiniPure.Proofs,LeanSwe.MiniInv.Proofs,LeanSwe.MiniProp.Proofs,LeanSwe.MiniLeaf.Proofs,LeanSwe.MiniComp.Proofs"
 
 private def copyFileOrDir (src dst : System.FilePath) : IO Unit := do
   let out ← runCmd "cp" #["-a", src.toString, dst.toString]
@@ -138,8 +124,8 @@ private def buildSyntheticRepo (baseDir realLibAbs : System.FilePath) : IO (Syst
   return (root, libDir)
 
 private def runAuditCase (bin libDir manifestPath : System.FilePath)
-    (rootsCsv modelAllow hookAllow : String) (synthAllow : String := "") : IO IO.Process.Output :=
-  runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manifestPath.toString, rootsCsv, modelAllow, hookAllow, synthAllow]
+    (rootsCsv : String) : IO IO.Process.Output :=
+  runCmd bin.toString #["--internal-manifest-audit", libDir.toString, manifestPath.toString, rootsCsv]
 
 private def runPrintSigCase (bin libDir manifestPath : System.FilePath) (rootsCsv pkgStr : String) : IO IO.Process.Output :=
   runCmd bin.toString #["--internal-print-obeys-sig", libDir.toString, manifestPath.toString, rootsCsv, pkgStr]
@@ -180,15 +166,15 @@ private def runPromiseMutantCase
 
 private def runMutantCase
     (bin tmpRoot baseDir realLibAbs : System.FilePath) (caseName : String)
-    (mutate : System.FilePath → System.FilePath → String → IO (String × String × String × String))
+    (mutate : System.FilePath → System.FilePath → String → IO String)
     (expectedDiag? : Option String) : IO Unit := do
   let caseDir := tmpRoot / s!"case_{caseName}"
   copyFileOrDir baseDir caseDir
   let root := caseDir / "repo"
   let libDir := caseDir / "lib"
   let leanPath := s!"{libDir}:{realLibAbs}"
-  let (rootsCsv, modelAllow, hookAllow, synthAllow) ← mutate root libDir leanPath
-  let out ← runAuditCase bin libDir (root / "scripts/package_manifest.json") rootsCsv modelAllow hookAllow synthAllow
+  let rootsCsv ← mutate root libDir leanPath
+  let out ← runAuditCase bin libDir (root / "scripts/package_manifest.json") rootsCsv
   match expectedDiag? with
   | none => assertPass caseName out
   | some diag => assertFailWith caseName diag out
@@ -218,18 +204,10 @@ def main (_ : List String) : IO UInt32 := do
     let (baseRoot, baseLib) ← buildSyntheticRepo baseDir realLibAbs
     let baseMan := baseRoot / "scripts/package_manifest.json"
 
-    assertPass "baseline_compliant" (← runAuditCase bin baseLib baseMan baselineRootsCsv "" "")
-    assertFailWith "stale_model_presence_allowlist" "STALE_MODEL_PRESENCE_ALLOWLIST"
-      (← runAuditCase bin baseLib baseMan baselineRootsCsv "MISSING_OBEYS_MODEL|LeanSwe.MiniPure" "")
-    assertFailWith "stale_middle_hook_allowlist" "STALE_MIDDLE_HOOK_ALLOWLIST"
-      (← runAuditCase bin baseLib baseMan baselineRootsCsv "" "MIDDLE_HOOK|LeanSwe.MiniComp")
-    assertFailWith "stale_obeys_synth_allowlist" "STALE_OBEYS_SYNTH_ALLOWLIST"
-      (← runAuditCase bin baseLib baseMan baselineRootsCsv "" "" "OBEYS_SYNTH|LeanSwe.MiniPure")
+    assertPass "baseline_compliant" (← runAuditCase bin baseLib baseMan baselineRootsCsv)
 
     assertPassWith "print_sig_pure" "Core.ObeysPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel"
       (← runPrintSigCase bin baseLib baseMan baselineRootsCsv "LeanSwe.MiniPure")
-    assertPassWith "print_sig_err_msg" "Core.ObeysPureEqUpToErrMsg"
-      (← runPrintSigCase bin baseLib baseMan baselineRootsCsv "LeanSwe.MiniErrMsg")
     assertPassWith "print_sig_inv_render" "Core.ObeysInverseRender LeanSwe.MiniInv.parse LeanSwe.MiniInv.Model.render"
       (← runPrintSigCase bin baseLib baseMan baselineRootsCsv "LeanSwe.MiniInv")
     assertPassWith "print_sig_step" "Core.ObeysStepFrom id"
@@ -238,27 +216,23 @@ def main (_ : List String) : IO UInt32 := do
     assertPassWith "print_sig_prop_allpass" "Core.AllPass" propSigOut
     assertPassWith "print_sig_prop_canreach" "Core.CanReach" propSigOut
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "middle_hook_scoped_ops" (fun root libDir leanPath => do
-      writeAndRecompile root libDir leanPath #[
-        ("LeanSwe/MiniComp/Types.lean",
-         "namespace LeanSwe.MiniComp\nstructure CompApiM (m : Type → Type) where\n  callPing : Nat → m Nat\nstructure ScopedCompOpsM (m : Type → Type) where\n  runScoped : Nat → m Nat\nabbrev CompApi := CompApiM IO\nend LeanSwe.MiniComp\n"),
-        ("LeanSwe/MiniComp/Model.lean",
-         "import LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\ndef execRaw {W : Type} (ops : ScopedCompOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.runScoped req\ndef allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\ndef execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\ndef allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n"),
-        ("LeanSwe/MiniComp/Impl.lean",
-         "import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\ndef defaultScopedIoOps : ScopedCompOpsM IO := { runScoped := LeanSwe.MiniLeaf.defaultOps.ping }\ndef mkScopedApiM {m : Type → Type} [Monad m] (ops : ScopedCompOpsM m) : CompApiM m := { callPing := ops.runScoped }\nend LeanSwe.MiniComp.Internal\n"),
-        ("LeanSwe/MiniComp/Interface.lean",
-         "import LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\ndef defaultApi : CompApi := Internal.mkScopedApiM Internal.defaultScopedIoOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n"),
-        ("LeanSwe/MiniComp/Proofs.lean",
-         "import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\ntheorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkScopedApiM Model.execPkg Model.allowedPkg := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")]
-      assertPass "middle_hook_allowlisted" (← runAuditCase bin libDir (root / "scripts/package_manifest.json") baselineRootsCsv "" "MIDDLE_HOOK|LeanSwe.MiniComp")
-      return (baselineRootsCsv, "", "", "")
-    ) (some "MIDDLE_HOOK_VIOLATION")
-
     let runStd (name : String) (expected? : Option String) (mutate : System.FilePath → System.FilePath → String → IO Unit) : IO Unit :=
       runMutantCase bin tmpRoot baseDir realLibAbs name (fun root libDir leanPath => do
-        mutate root libDir leanPath; return (baselineRootsCsv, "", "", "")) expected?
+        mutate root libDir leanPath; return baselineRootsCsv) expected?
     let runFiles (name : String) (expected? : Option String) (files : Array (String × String)) (extraRels : Array String := #[]) : IO Unit :=
       runStd name expected? fun root libDir leanPath => writeAndRecompile root libDir leanPath files extraRels
+
+    runFiles "middle_hook_scoped_ops" (some "MIDDLE_HOOK_VIOLATION") #[
+      ("LeanSwe/MiniComp/Types.lean",
+       "namespace LeanSwe.MiniComp\nstructure CompApiM (m : Type → Type) where\n  callPing : Nat → m Nat\nstructure ScopedCompOpsM (m : Type → Type) where\n  runScoped : Nat → m Nat\nabbrev CompApi := CompApiM IO\nend LeanSwe.MiniComp\n"),
+      ("LeanSwe/MiniComp/Model.lean",
+       "import LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Model\ndef compWf (_ : Nat) : Bool := true\ndef execRaw {W : Type} (ops : ScopedCompOpsM (StateM W)) (req : Nat) : StateM W Nat := ops.runScoped req\ndef allowedRaw (s req out s' : Nat) : Prop := out = req ∧ s' = s\ndef execPkg {W : Type} (api : CompApiM (StateM W)) (req : Nat) : StateM W Nat := api.callPing req\ndef allowedPkg (s req out s' : Nat) : Prop := out = req ∧ s' = s\nend LeanSwe.MiniComp.Model\n"),
+      ("LeanSwe/MiniComp/Impl.lean",
+       "import LeanSwe.MiniLeaf.Interface\nimport LeanSwe.MiniComp.Types\nnamespace LeanSwe.MiniComp.Internal\ndef defaultScopedIoOps : ScopedCompOpsM IO := { runScoped := LeanSwe.MiniLeaf.defaultOps.ping }\ndef mkScopedApiM {m : Type → Type} [Monad m] (ops : ScopedCompOpsM m) : CompApiM m := { callPing := ops.runScoped }\nend LeanSwe.MiniComp.Internal\n"),
+      ("LeanSwe/MiniComp/Interface.lean",
+       "import LeanSwe.MiniComp.Impl\nnamespace LeanSwe.MiniComp\ndef defaultApi : CompApi := Internal.mkScopedApiM Internal.defaultScopedIoOps\ndef callPing (n : Nat) : IO Nat := defaultApi.callPing n\nend LeanSwe.MiniComp\n"),
+      ("LeanSwe/MiniComp/Proofs.lean",
+       "import Core.Obeys\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\ntheorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkScopedApiM Model.execPkg Model.allowedPkg := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")]
 
     runFiles "missing_obeys_model" (some "MANIFEST_MISSING_OBEYS_MODEL") #[
       ("LeanSwe/MiniPure/Proofs.lean",
@@ -274,11 +248,9 @@ def main (_ : List String) : IO UInt32 := do
        "import Core.Obeys\nimport LeanSwe.MiniPure.Model\nimport LeanSwe.MiniPure.Interface\nabbrev Core.RefinesPureEq := @Core.ObeysPureEq\nnamespace LeanSwe.MiniPure.Proofs\n" ++
        "theorem obeys_model : Core.RefinesPureEq LeanSwe.MiniPure.eval LeanSwe.MiniPure.Model.evalModel := fun _ => rfl\nend LeanSwe.MiniPure.Proofs\n")]
 
-    runMutantCase bin tmpRoot baseDir realLibAbs "missing_model" (fun root libDir leanPath => do
-      writeAndRecompile root libDir leanPath #[("LeanSwe/MiniPure/Proofs.lean",
-        "import LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\nend LeanSwe.MiniPure.Proofs\n")]
-      return (baselineRootsCsv, "MISSING_OBEYS_MODEL|LeanSwe.MiniPure", "", "")
-    ) (some "MANIFEST_MISSING_MODEL")
+    runFiles "missing_model" (some "MANIFEST_MISSING_MODEL") #[
+      ("LeanSwe/MiniPure/Proofs.lean",
+       "import LeanSwe.MiniPure.Interface\nnamespace LeanSwe.MiniPure.Proofs\nend LeanSwe.MiniPure.Proofs\n")]
 
     runFiles "vacuous_obeys_model" (some "VACUOUS_OR_INVALID_OBEYS_MODEL") #[
       ("LeanSwe/MiniPure/Proofs.lean",
@@ -855,7 +827,7 @@ def main (_ : List String) : IO UInt32 := do
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
     assertPass "dag_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesDagTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=89 failed=0"
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=84 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

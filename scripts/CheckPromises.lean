@@ -20,7 +20,7 @@ Checks:
 5. Qualifying theorems have no hypothesis (`Prop` binder) and all qualifying theorems plus all
    `SpecMutants` declarations/examples use only standard axioms
    (`propext`, `Classical.choice`, `Quot.sound`) with zero `sorry`/`admit`/`native_decide`.
-6. One-way transitive `.olean` import-DAG ratchet and no-proof-content audit covering `LeanSwe`,
+6. One-way transitive `.olean` import-DAG and no-proof-content audit covering `LeanSwe`,
    any standalone `<Pkg>.Verified` verification roots, and any extra unimported modules:
    - Within-package transitive checks (`Types`/`Model`/`SpecTests` cannot import
      same-package `Impl`/`SysBridge`/`Interface` or any non-API role
@@ -46,8 +46,7 @@ Checks:
      SpecTests, Impl, SysBridge, Interface}`) in `SpecTests`/`Properties` (`type` or `value`,
      excluding same-package `Properties.*` references inside `Properties`), in exported
      `obeys_model` theorem signatures, or in qualifying `AllPass` / `CanReach` theorem
-     signatures, enforced with a strict shrinking ratchet allowlist (fails on both new violations
-     and stale allowlist entries).
+     signatures (zero-tolerance fail-closed).
 7. Manifest-driven (`scripts/package_manifest.json`) package-agnostic trusted-closure audit,
    `obeys_model` presence/non-vacuity audit, and generalized `.olean` wiring / middle-hook ban
    across all registered packages:
@@ -57,12 +56,12 @@ Checks:
      `private` opaque in `<Pkg>.Interface` with `leanswe_*` C symbol when `external_boundary == true`),
      plus zero forbidden host IO externs reachable outside allowed boundary/Core runtime primitives.
    - Presence, standard-axioms, unconditionality, and non-vacuity checks on `<Pkg>.Model` and
-     `<Pkg>.Proofs.obeys_model` (exact shrinking `modelPresenceAllowlist`).
+     `<Pkg>.Proofs.obeys_model`.
    - Generalized `.olean` wiring and capability-type provenance audit banning same-package
-     un-fuzzed middle hooks in composite packages (exact shrinking `middleHookAllowlist`).
+     un-fuzzed middle hooks in composite packages.
 8. Mechanical `.olean` `Expr` synthesis and `Meta.isDefEq` (`.reducible`) verification for
-   `obeys_model` across `kind == "model"` and `kind == "property"` packages (exact shrinking
-   `obeysSynthAllowlist`), optional pure-function `Model` twins (requiring a conjunct whenever a
+   `obeys_model` across `kind == "model"` and `kind == "property"` packages, optional pure-function
+   `Model` twins (requiring a conjunct whenever a
    matching `Model` twin exists while allowing direct `Properties`/`Proofs` or unmodeled pure
    helpers otherwise), uniform joint canonical stateful step model-equivalence checks, plus
    `--print-obeys-sig <Pkg>` CLI signature synthesis.
@@ -1322,20 +1321,6 @@ private def auditImportDagEnv
                 violations := recordDagViolation violations key msg
   return { violations, sigProofCounts := sigCounts, checkedModules }
 
-/-- Shrinking ratchet allowlist of pre-existing import-DAG violations. Every entry must stay
-active; removing a listed violation forces removing its entry from this table, and any new
-violation fails the audit gate. -/
-private def importDagAllowlist : Array String := #[]
-
-/-- Shrinking ratchet allowlist of pre-existing constants from disallowed non-API roles
-(`Properties`, `Proofs`, `SpecMutants`, `RuntimeTests`, `TestSupport`, `Umbrella`, `Other`)
-referenced in qualifying `Core.AllPass`/`Core.CanReach` promised theorem signatures
-(`thmMod|constMod|const`, paired with the exact active theorem count). Any new constant,
-increased count, or stale/lower count fails the gate so the table strictly shrinks as
-proof-local mock helpers move into `Model.lean` (and cannot be evaded by moving them into
-`.other`, `.testSupport`, or unlocked `Properties` helpers). -/
-private def sigProofConstAllowlist : Array (String × Nat) := #[]
-
 private def mergeDagReports (a b : DagAuditReport) : DagAuditReport := Id.run do
   let mut v := a.violations
   for (k, msg) in b.violations.toList do
@@ -1387,48 +1372,17 @@ private def decodeDagReportWireLines (lines : Array String) : DagAuditReport :=
     | some delta => mergeDagReports acc delta
     | none => acc
 
-private def evaluateDagRatchetWith
-    (allowEdges : Array String)
-    (allowSigs : Array (String × Nat))
-    (rep : DagAuditReport) : Array String := Id.run do
+private def formatDagAuditErrors (rep : DagAuditReport) : Array String := Id.run do
   let mut errs : Array String := #[]
-  let mut allowSet : Std.HashSet String := {}
-  for entry in allowEdges do
-    if allowSet.contains entry then
-      errs := errs.push s!"DUPLICATE_DAG_ALLOWLIST_ENTRY: {entry}"
-    allowSet := allowSet.insert entry
   let obsKeys := (rep.violations.toList.map (·.1)).toArray.qsort (· < ·)
   for k in obsKeys do
-    if !allowSet.contains k then
-      errs := errs.push s!"{rep.violations.getD k k} [key={k}]"
-  for entry in allowEdges do
-    if !rep.violations.contains entry then
-      errs := errs.push s!"STALE_IMPORT_DAG_ALLOWLIST: {entry} no longer occurs; remove it from importDagAllowlist"
-  let mut sigAllowMap : Std.HashMap String Nat := {}
-  for (k, expCnt) in allowSigs do
-    if sigAllowMap.contains k then
-      errs := errs.push s!"DUPLICATE_SIG_PROOF_ALLOWLIST_ENTRY: {k}"
-    sigAllowMap := sigAllowMap.insert k expCnt
+    errs := errs.push s!"{rep.violations.getD k k} [key={k}]"
   let obsSigKeys := (rep.sigProofCounts.toList.map (·.1)).toArray.qsort (· < ·)
   for k in obsSigKeys do
     let (obsCnt, samples) := rep.sigProofCounts.getD k (0, #[])
-    match sigAllowMap.get? k with
-    | none =>
-      let sampleStr := String.intercalate ", " samples.toList
-      errs := errs.push s!"PROOF_CONST_IN_SIGNATURE: {k} count={obsCnt} (e.g. {sampleStr})"
-    | some expCnt =>
-      if obsCnt > expCnt then
-        let sampleStr := String.intercalate ", " samples.toList
-        errs := errs.push s!"PROOF_CONST_IN_SIGNATURE_GREW: {k} count={obsCnt} exceeds allowlisted {expCnt} (e.g. {sampleStr})"
-      else if obsCnt < expCnt then
-        errs := errs.push s!"STALE_SIG_PROOF_ALLOWLIST: {k} observed count={obsCnt} < allowlisted {expCnt}; shrink sigProofConstAllowlist"
-  for (k, expCnt) in allowSigs do
-    if !rep.sigProofCounts.contains k then
-      errs := errs.push s!"STALE_SIG_PROOF_ALLOWLIST: {k} (expected count={expCnt}) no longer occurs; remove it from sigProofConstAllowlist"
+    let sampleStr := String.intercalate ", " samples.toList
+    errs := errs.push s!"PROOF_CONST_IN_SIGNATURE: {k} count={obsCnt} (e.g. {sampleStr})"
   return errs
-
-private def evaluateDagRatchet (rep : DagAuditReport) : Array String :=
-  evaluateDagRatchetWith importDagAllowlist sigProofConstAllowlist rep
 
 private structure ManifestPkgSpec where
   name : Name
@@ -1436,7 +1390,6 @@ private structure ManifestPkgSpec where
   purity : String
   deps : Array Name
   externalBoundary : Bool
-  errMsgOpaque : Bool := false
   fuzzSuite? : Option String := none
   specStyle? : Option String := none
   deriving Inhabited
@@ -1480,7 +1433,6 @@ private def parsePackageManifest (raw : String) : Except String PackageManifest 
       match d.getStr? with
       | .ok ds => deps := deps.push ds.toName
       | .error _ => .error s!"MANIFEST_SCHEMA_ERROR: {pkgStr} 'deps' entry must be a string"
-    let errMsgOpaque := (entry.getObjValAs? Bool "err_msg_opaque").toOption.getD false
     let fuzzSuite? := (entry.getObjValAs? String "fuzz_suite").toOption
     let specStyle? := (entry.getObjValAs? String "spec_style").toOption
     pkgs := pkgs.insert pkgName {
@@ -1489,7 +1441,6 @@ private def parsePackageManifest (raw : String) : Except String PackageManifest 
       purity := purity
       deps := deps
       externalBoundary := extB
-      errMsgOpaque := errMsgOpaque
       fuzzSuite? := fuzzSuite?
       specStyle? := specStyle?
     }
@@ -1501,22 +1452,6 @@ private def loadPackageManifest (repoDir : System.FilePath) : IO (Except String 
     return .error s!"MANIFEST_MISSING: {path} not found"
   let raw ← IO.FS.readFile path
   return parsePackageManifest raw
-
-/-- Exact shrinking ratchet allowlist of `kind == "model"` packages lacking `<Pkg>.Model` or
-`<Pkg>.Proofs.obeys_model` at `5304439`. Fails on both new missing specs and
-stale entries as follow-up PRs land. -/
-private def modelPresenceAllowlist : Array String := #[]
-
-/-- Exact shrinking ratchet allowlist of non-pure zero-`@[extern]` packages currently wiring
-through a same-package un-fuzzed middle hook (`SysBridge.defaultOps`, `CliOpsM`,
-`ScopedRawFsOpsM`, `defaultRawOps`) instead of imported `manifest.deps`
-capabilities. -/
-private def middleHookAllowlist : Array String := #[]
-
-/-- Exact shrinking ratchet allowlist of packages whose `obeys_model`
-does not yet match mechanical `.olean` `Expr` synthesis at `6a903b4`. Fails on both new
-regressions and stale entries as packages converge. -/
-private def obeysSynthAllowlist : Array String := #[]
 
 private structure ManifestAuditReport where
   hardErrors : Array String := #[]
@@ -1546,8 +1481,6 @@ private def isDepDefaultCap (depSet : Std.HashSet Name) (c : Name) : Bool :=
 private def isKnownContractPredHead (fn : Name) : Bool :=
   fn == `Core.ObeysPure || fn == `Core.ObeysPure2 || fn == `Core.ObeysPure3 || fn == `Core.ObeysPure4 ||
     fn == `Core.ObeysPureEq || fn == `Core.ObeysPureEq2 || fn == `Core.ObeysPureEq3 || fn == `Core.ObeysPureEq4 ||
-    fn == `Core.ObeysPureEqUpToErrMsg || fn == `Core.ObeysPureEqUpToErrMsg2 ||
-    fn == `Core.ObeysPureEqUpToErrMsg3 || fn == `Core.ObeysPureEqUpToErrMsg4 ||
     fn == `Core.ObeysInverseRender || fn == `Core.ObeysInverseRenderWithin ||
     fn == `Core.ObeysPureFrom || fn == `Core.ObeysInverseRenderFrom ||
     fn == `Core.ObeysStep || fn == `Core.ObeysStepExcept || fn == `Core.ObeysStepId ||
@@ -2435,12 +2368,6 @@ private def extractErrFieldProj? (env : Environment) (errTy : Expr) (fieldNames 
         | _ => pure ()
   return none
 
-private def extractErrKindMsg? (env : Environment) (errTy : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
-  let some (kTy, kindProj) ← extractErrFieldProj? env errTy #[`kind] | return none
-  let some (msgTy, msgProj) ← extractErrFieldProj? env errTy #[`message, `msg] | return none
-  if !(← isDefEqReducible msgTy (mkConst ``String)) then return none
-  return some (kTy, kindProj, msgProj)
-
 private def extractErrMsgOnly? (env : Environment) (errTy : Expr) : MetaM (Option Expr) := do
   let some (msgTy, msgProj) ← extractErrFieldProj? env errTy #[`message, `msg] | return none
   if !(← isDefEqReducible msgTy (mkConst ``String)) then return none
@@ -2743,17 +2670,6 @@ private def synthPureOpConjunct
           return .error s!"inverse_render op {opName} error type lacks message/msg projection"
 
     if let some (_, mExpr) ← findModelConstByShortNames? env modelMods modelDefs spec.name modelCands polyXs fnTy then
-      if spec.errMsgOpaque && retW.isAppOfArity ``Except 2 then
-        let errTy := retW.appFn!.appArg!
-        let okTy := retW.appArg!
-        if let some (kTy, kindProj, msgProj) ← extractErrKindMsg? env errTy then
-          let head := match arity with
-            | 1 => `Core.ObeysPureEqUpToErrMsg
-            | 2 => `Core.ObeysPureEqUpToErrMsg2
-            | 3 => `Core.ObeysPureEqUpToErrMsg3
-            | _ => `Core.ObeysPureEqUpToErrMsg4
-          let pred := mkAppN (mkConst head []) (argTys ++ #[errTy, kTy, okTy, kindProj, msgProj, opApplied, mExpr])
-          return .matched (← Meta.mkForallFVars polyXs pred)
       let head := match arity with
         | 1 => `Core.ObeysPureEq
         | 2 => `Core.ObeysPureEq2
@@ -3993,52 +3909,18 @@ private def auditManifestAndWiring (env : Environment) (manifest : PackageManife
   checkedSynthPkgs := metaSynthCnt
   return { hardErrors, modelPresenceObs, middleHookObs, obeysSynthObs, checkedModelPkgs, checkedWiredPkgs, checkedSynthPkgs }
 
-private def evaluateManifestRatchetWith
-    (allowModelPresence allowMiddleHook allowObeysSynth : Array String)
-    (rep : ManifestAuditReport) : Array String := Id.run do
+private def formatManifestAuditErrors (rep : ManifestAuditReport) : Array String := Id.run do
   let mut errs : Array String := rep.hardErrors
-  let mut modelAllowSet : Std.HashSet String := {}
-  for entry in allowModelPresence do
-    if modelAllowSet.contains entry then
-      errs := errs.push s!"DUPLICATE_MODEL_PRESENCE_ALLOWLIST: {entry}"
-    modelAllowSet := modelAllowSet.insert entry
   let obsModelKeys := (rep.modelPresenceObs.toList.map (·.1)).toArray.qsort (· < ·)
   for k in obsModelKeys do
-    if !modelAllowSet.contains k then
-      errs := errs.push s!"{rep.modelPresenceObs.getD k k} [key={k}]"
-  for entry in allowModelPresence do
-    if !rep.modelPresenceObs.contains entry then
-      errs := errs.push s!"STALE_MODEL_PRESENCE_ALLOWLIST: {entry} no longer occurs; remove it from modelPresenceAllowlist"
-
-  let mut hookAllowSet : Std.HashSet String := {}
-  for entry in allowMiddleHook do
-    if hookAllowSet.contains entry then
-      errs := errs.push s!"DUPLICATE_MIDDLE_HOOK_ALLOWLIST: {entry}"
-    hookAllowSet := hookAllowSet.insert entry
+    errs := errs.push s!"{rep.modelPresenceObs.getD k k} [key={k}]"
   let obsHookKeys := (rep.middleHookObs.toList.map (·.1)).toArray.qsort (· < ·)
   for k in obsHookKeys do
-    if !hookAllowSet.contains k then
-      errs := errs.push s!"{rep.middleHookObs.getD k k} [key={k}]"
-  for entry in allowMiddleHook do
-    if !rep.middleHookObs.contains entry then
-      errs := errs.push s!"STALE_MIDDLE_HOOK_ALLOWLIST: {entry} no longer occurs; remove it from middleHookAllowlist"
-
-  let mut synthAllowSet : Std.HashSet String := {}
-  for entry in allowObeysSynth do
-    if synthAllowSet.contains entry then
-      errs := errs.push s!"DUPLICATE_OBEYS_SYNTH_ALLOWLIST: {entry}"
-    synthAllowSet := synthAllowSet.insert entry
+    errs := errs.push s!"{rep.middleHookObs.getD k k} [key={k}]"
   let obsSynthKeys := (rep.obeysSynthObs.toList.map (·.1)).toArray.qsort (· < ·)
   for k in obsSynthKeys do
-    if !synthAllowSet.contains k then
-      errs := errs.push s!"OBEYS_SYNTH_MISMATCH: {rep.obeysSynthObs.getD k k} [key={k}]"
-  for entry in allowObeysSynth do
-    if !rep.obeysSynthObs.contains entry then
-      errs := errs.push s!"STALE_OBEYS_SYNTH_ALLOWLIST: {entry} no longer occurs; remove it from obeysSynthAllowlist"
+    errs := errs.push s!"OBEYS_SYNTH_MISMATCH: {rep.obeysSynthObs.getD k k} [key={k}]"
   return errs
-
-private def evaluateManifestRatchet (rep : ManifestAuditReport) : Array String :=
-  evaluateManifestRatchetWith modelPresenceAllowlist middleHookAllowlist obeysSynthAllowlist rep
 
 private structure PromisePhaseReport where
   errors : Array String := #[]
@@ -4378,7 +4260,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       enableInitializersExecution
       let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
       let rep := auditImportDagEnv testEnv (fun _ => true) {} {} (scanPublicAllPassDirect := true)
-      let errs := evaluateDagRatchetWith #[] #[] rep
+      let errs := formatDagAuditErrors rep
       IO.println s!"DAG_AUDIT_TEST: modules={rep.checkedModules} edges_obs={rep.violations.size} sig_obs={rep.sigProofCounts.size} errors={errs.size}"
       for e in errs do
         IO.eprintln e
@@ -4389,11 +4271,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       return 1
   if args.head? == some "--internal-manifest-audit" then
     match args.drop 1 with
-    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv]
-    | [libDirStr, manifestPathStr, rootsCsv, modelAllowCsv, hookAllowCsv, _] =>
-      let synthAllowCsv := match args.drop 6 with
-        | s :: _ => s
-        | [] => ""
+    | [libDirStr, manifestPathStr, rootsCsv] =>
       let libDir : System.FilePath := libDirStr
       let manifestRaw ← IO.FS.readFile manifestPathStr
       match parsePackageManifest manifestRaw with
@@ -4402,21 +4280,18 @@ unsafe def main (args : List String) : IO UInt32 := do
         return 1
       | .ok manifest =>
         let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
-        let allowModel := if modelAllowCsv.isEmpty then #[] else (modelAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
-        let allowHook := if hookAllowCsv.isEmpty then #[] else (hookAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
-        let allowSynth := if synthAllowCsv.isEmpty then #[] else (synthAllowCsv.splitOn ";").filter (!·.isEmpty) |>.toArray
         initSearchPath (← findSysroot) [libDir]
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
         let rep ← auditManifestAndWiring testEnv manifest
-        let errs := evaluateManifestRatchetWith allowModel allowHook allowSynth rep
+        let errs := formatManifestAuditErrors rep
         IO.println s!"MANIFEST_AUDIT_TEST: model_pkgs={rep.checkedModelPkgs} wired_pkgs={rep.checkedWiredPkgs} synth_pkgs={rep.checkedSynthPkgs} model_obs={rep.modelPresenceObs.size} hook_obs={rep.middleHookObs.size} synth_obs={rep.obeysSynthObs.size} hard_errs={rep.hardErrors.size} errors={errs.size}"
         for e in errs do
           IO.eprintln e
         testEnv.freeRegions
         return if errs.isEmpty then 0 else 1
     | _ =>
-      IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv> <modelAllowCsv> <hookAllowCsv> [synthAllowCsv]"
+      IO.eprintln "USAGE_ERROR: --internal-manifest-audit <libDir> <manifestPath> <rootsCsv>"
       return 1
   if args.head? == some "--internal-promise-manifest-audit" then
     match args.drop 1 with
@@ -4440,7 +4315,7 @@ unsafe def main (args : List String) : IO UInt32 := do
         let allMutStrs := pRep.allMutMods.map (·.toString)
         let parityErrs := checkSpecMutantsParity specModStrs mutOkAll allMutStrs
         let mRep ← auditManifestAndWiring testEnv manifest
-        let mErrs := evaluateManifestRatchetWith #[] #[] #[] mRep
+        let mErrs := formatManifestAuditErrors mRep
         let errs := pRep.errors ++ parityErrs ++ mErrs
         IO.println s!"PROMISE_MANIFEST_AUDIT_TEST: spec_modules={pRep.specModCount} promises={pRep.promises.size} with_assume={pRep.assumesCount} model_pkgs={mRep.checkedModelPkgs} errors={errs.size}"
         for e in errs do
@@ -4928,9 +4803,9 @@ unsafe def main (args : List String) : IO UInt32 := do
 
   let mainDagRep := auditImportDagEnv env (fun m => !isAnyVerifiedOnlyMod m) ap1 cr1
   let combinedDagRep := mergeDagReports (mergeDagReports mainDagRep pfDagRep) extraDagRep
-  let dagErrs := evaluateDagRatchet combinedDagRep
+  let dagErrs := formatDagAuditErrors combinedDagRep
   let totalSigHits := combinedDagRep.sigProofCounts.fold (init := 0) fun acc _ (cnt, _) => acc + cnt
-  IO.println s!"IMPORT_DAG_CHECK: modules={combinedDagRep.checkedModules} edges_obs={combinedDagRep.violations.size} edges_allow={importDagAllowlist.size} sig_keys_obs={combinedDagRep.sigProofCounts.size} sig_hits_obs={totalSigHits} sig_allow={sigProofConstAllowlist.size} errors={dagErrs.size}"
+  IO.println s!"IMPORT_DAG_CHECK: modules={combinedDagRep.checkedModules} edges_obs={combinedDagRep.violations.size} sig_keys_obs={combinedDagRep.sigProofCounts.size} sig_hits_obs={totalSigHits} errors={dagErrs.size}"
 
   let (closureErrs, manifestErrs) ← match manifestRes with
     | .error err =>
@@ -4964,8 +4839,8 @@ unsafe def main (args : List String) : IO UInt32 := do
           middleHookObs := mergedHookObs
           obeysSynthObs := mergedSynthObs
           checkedSynthPkgs := baseSynthCnt + pfMSynthCnt }
-      let mErrs := evaluateManifestRatchet manifestRep
-      IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} synth_pkgs={manifestRep.checkedSynthPkgs} model_obs={manifestRep.modelPresenceObs.size} model_allow={modelPresenceAllowlist.size} hook_obs={manifestRep.middleHookObs.size} hook_allow={middleHookAllowlist.size} synth_obs={manifestRep.obeysSynthObs.size} synth_allow={obeysSynthAllowlist.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
+      let mErrs := formatManifestAuditErrors manifestRep
+      IO.println s!"MANIFEST_WIRING_CHECK: model_pkgs={manifestRep.checkedModelPkgs} wired_pkgs={manifestRep.checkedWiredPkgs} synth_pkgs={manifestRep.checkedSynthPkgs} model_obs={manifestRep.modelPresenceObs.size} hook_obs={manifestRep.middleHookObs.size} synth_obs={manifestRep.obeysSynthObs.size} hard_errs={manifestRep.hardErrors.size} errors={mErrs.size}"
       pure (cErrs, mErrs)
 
   let specModCount := sCnt1 + sCnt2

@@ -1671,48 +1671,6 @@ private def checkRefinesModelTheorem
             coveredPureOpsRef.modify (·.insert implFn)
           return aErrs
 
-        let pureErrMsgInfo? : Option (Array Expr × Expr × Expr × Expr × Expr × Expr × Expr × Expr) :=
-          if ab.isAppOfArity `Core.ObeysPureEqUpToErrMsg 8 then
-            let a := ab.getAppArgs; some (#[a[0]!], a[1]!, a[2]!, a[3]!, a[4]!, a[5]!, a[6]!, a[7]!)
-          else if ab.isAppOfArity `Core.ObeysPureEqUpToErrMsg2 9 then
-            let a := ab.getAppArgs; some (#[a[0]!, a[1]!], a[2]!, a[3]!, a[4]!, a[5]!, a[6]!, a[7]!, a[8]!)
-          else if ab.isAppOfArity `Core.ObeysPureEqUpToErrMsg3 10 then
-            let a := ab.getAppArgs; some (#[a[0]!, a[1]!, a[2]!], a[3]!, a[4]!, a[5]!, a[6]!, a[7]!, a[8]!, a[9]!)
-          else if ab.isAppOfArity `Core.ObeysPureEqUpToErrMsg4 11 then
-            let a := ab.getAppArgs; some (#[a[0]!, a[1]!, a[2]!, a[3]!], a[4]!, a[5]!, a[6]!, a[7]!, a[8]!, a[9]!, a[10]!)
-          else none
-
-        if let some (inTys, errTy, _kindTy, _okTy, kindArg, msgArg, implArg, modelArg) := pureErrMsgInfo? then
-          let some kindFn ← checkBareConstArg env allowedAtomFVs false kindArg
-            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare kindOf argument in {thmName}"]
-          let some msgFn ← checkBareConstArg env allowedAtomFVs false msgArg
-            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare msgOf argument in {thmName}"]
-          let some implFn ← checkBareConstArg env allowedAtomFVs false implArg
-            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare impl argument in {thmName}"]
-          let some modelFn ← checkBareConstArg env allowedAtomFVs false modelArg
-            | return #[s!"LAMBDA_OR_PARTIAL_APP_IN_REFINES: non-bare model argument in {thmName}"]
-          if isPrivateName implFn || moduleOfConst env implFn != ifaceMod then
-            aErrs := aErrs.push s!"NON_INTERFACE_IMPL_IN_REFINES: {implFn} in {thmName} is not a public constant in {ifaceMod}"
-          if isPrivateName modelFn || !modelMods.contains (moduleOfConst env modelFn) then
-            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {modelFn} in {thmName} is not a public constant in {pkg}.Model"
-          if !isAllowedErrorExtractorConst env pkg modelMods kindFn then
-            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {kindFn} in {thmName} must be a public Types/Model constant"
-          if !isAllowedErrorExtractorConst env pkg modelMods msgFn then
-            aErrs := aErrs.push s!"NON_MODEL_SPEC_IN_REFINES: {msgFn} in {thmName} must be a public Types/Model constant"
-          for mFn in #[kindFn, msgFn, modelFn] do
-            if ← constTransitivelyTouchesSweImplOrIfaceCached env safeModelConstsRef mFn then
-              aErrs := aErrs.push s!"MODEL_REFERENCES_IMPL_IN_REFINES: {mFn} in {thmName} transitively references Interface/Impl"
-          let inTysSubst := inTys.map (fun t => applySubst (stripOptParamType t))
-          let errTySubst := applySubst (stripOptParamType errTy)
-          for inTyS in inTysSubst do
-            if !(← isProvablyInhabitedDataType env 8 inTyS) then
-              aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited input domain for {implFn} in {thmName}"
-          if !(← isProvablyInhabitedDataType env 8 errTySubst) then
-            aErrs := aErrs.push s!"UNINHABITED_DOMAIN_IN_REFINES: uninhabited error domain for {implFn} in {thmName}"
-          if aErrs.isEmpty then
-            coveredPureOpsRef.modify (·.insert implFn)
-          return aErrs
-
         if ab.isAppOfArity `Core.ObeysInverseRender 9 || ab.isAppOfArity `Core.ObeysInverseRenderWithin 10 then
           let hasWithin := ab.isAppOfArity `Core.ObeysInverseRenderWithin 10
           let a := ab.getAppArgs
@@ -2509,50 +2467,26 @@ private def renderExpectedObeysSig (env : Environment) (knownPkgs : Array Name) 
       if env.contains modelCand1 then s!"Model.{short}"
       else if env.contains modelCand2 then s!"Model.{short}Model"
       else s!"<MODEL_FN_FOR_{short}>"
-    let (explicitCount, hasPoly, exceptErrTy?) ← forallTelescope opTy fun xs ret => do
+    let (explicitCount, hasPoly) ← forallTelescope opTy fun xs _ => do
       let mut expN := 0
       let mut poly := false
       for x in xs do
         let bi ← x.fvarId!.getBinderInfo
         if bi == .default then expN := expN + 1
         else poly := true
-      let retW := (← whnf ret).consumeMData
-      let errTy? := if retW.isAppOfArity ``Except 2 then some retW.appFn!.appArg! else none
-      return (expN, poly, errTy?)
+      return (expN, poly)
     let line :=
       if hasPoly then
         s!"<MANUAL_TEMPLATE_POLY: {opName} (bind type/class params per conjunct; arity={explicitCount}, model={modelStr})>"
       else if explicitCount == 0 || explicitCount > 4 then
         s!"<MANUAL_TEMPLATE_ARITY_{explicitCount}: {opName} (Core.ObeysPure* supports arities 1..4; model={modelStr})>"
       else
-        match exceptErrTy? with
-        | some errTy =>
-          let pred := match explicitCount with
-            | 1 => "Core.ObeysPureEqUpToErrMsg"
-            | 2 => "Core.ObeysPureEqUpToErrMsg2"
-            | 3 => "Core.ObeysPureEqUpToErrMsg3"
-            | _ => "Core.ObeysPureEqUpToErrMsg4"
-          let (kindStr, msgStr) :=
-            match errTy.consumeMData.getAppFn.consumeMData with
-            | .const stName _ =>
-              if Lean.isStructure env stName then
-                let flds := Lean.getStructureFields env stName
-                let k := if flds.contains `kind then s!"{stName}.kind" else "<ERR_KIND_OF>"
-                let m :=
-                  if flds.contains `msg then s!"{stName}.msg"
-                  else if flds.contains `message then s!"{stName}.message"
-                  else "<ERR_MSG_OF>"
-                (k, m)
-              else ("<ERR_KIND_OF>", "<ERR_MSG_OF>")
-            | _ => ("<ERR_KIND_OF>", "<ERR_MSG_OF>")
-          s!"{pred} {kindStr} {msgStr} {opName} {modelStr}"
-        | none =>
-          let pred := match explicitCount with
-            | 1 => "Core.ObeysPureEq"
-            | 2 => "Core.ObeysPureEq2"
-            | 3 => "Core.ObeysPureEq3"
-            | _ => "Core.ObeysPureEq4"
-          s!"{pred} {opName} {modelStr}"
+        let pred := match explicitCount with
+          | 1 => "Core.ObeysPureEq"
+          | 2 => "Core.ObeysPureEq2"
+          | 3 => "Core.ObeysPureEq3"
+          | _ => "Core.ObeysPureEq4"
+        s!"{pred} {opName} {modelStr}"
     conjuncts := conjuncts.push line
   if !effOps.isEmpty then
     let mkApiCand :=
