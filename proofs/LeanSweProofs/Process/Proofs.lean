@@ -442,4 +442,9 @@ theorem obeys_model_nonvacuous (sched : Nat → Bool) :
       Core.ObeysStateCell projRaw projCell cell :=
   process_obeys_model_nonvacuous sched
 
+/-- `defaultApi.run` never throws an uncaught `IO.Error`. -/
+theorem defaultApi_run_never_throws (req : ExecRequest) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.Process.defaultApi.run req w = EST.Out.ok res w' :=
+  process_run_never_throws req w
+
 end LeanSwe.Process.Proofs

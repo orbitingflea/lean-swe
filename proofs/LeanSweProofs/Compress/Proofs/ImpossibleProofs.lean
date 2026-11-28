@@ -2,6 +2,7 @@ import Core.Assumptions
 import LeanSwe.Compress.Types
 import LeanSwe.Compress.Impl
 import LeanSwe.Compress.Interface
+import LeanSweProofs.Process.Proofs
 import LeanSweProofs.Compress.SpecTests
 import LeanSweProofs.Compress.Proofs.SharedHelpers
 
@@ -59,7 +60,7 @@ theorem compress_compressWith_never_corruptData (codec : Codec) (opts : Compress
   | ok _ =>
     dsimp only
     rw [io_bind_eq]
-    rcases LeanSwe.Process.defaultApi_run_never_throws (Internal.mkCompressRequest codec opts input) w with
+    rcases LeanSwe.Process.Proofs.defaultApi_run_never_throws (Internal.mkCompressRequest codec opts input) w with
       ⟨r, _, hRun⟩
     rw [hRun]
     cases r with

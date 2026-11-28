@@ -597,6 +597,33 @@ def main (_ : List String) : IO UInt32 := do
         (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
       IO.FS.removeDirAll caseDir
 
+    -- t-127: closure audit allows direct-dep top-level Proofs import and rejects transitive-only Proofs import.
+    do
+      let caseDir := tmpRoot / "case_closure_cross_proofs"
+      copyFileOrDir baseDir caseDir
+      let root := caseDir / "repo"
+      let libDir := caseDir / "lib"
+      let leanPath := s!"{libDir}:{realLibAbs}"
+      let extManifest := baselineManifestJson.replace
+        "    \"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false, \"spec_style\": \"state_step\"}\n"
+        ("    \"LeanSwe.MiniComp\": {\"kind\": \"model\", \"purity\": \"mixed\", \"deps\": [\"LeanSwe.MiniLeaf\"], \"external_boundary\": false, \"spec_style\": \"state_step\"},\n" ++
+         "    \"LeanSwe.MiniGrand\": {\"kind\": \"model\", \"purity\": \"pure\", \"deps\": [\"LeanSwe.MiniComp\"], \"external_boundary\": false, \"spec_style\": \"pure_eq\"}\n")
+      writeFileCreatingParents (root / "scripts/package_manifest.json") extManifest
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniComp/Proofs.lean",
+         "import Core.Obeys\nimport LeanSwe.MiniLeaf.Proofs\nimport LeanSwe.MiniComp.Model\nimport LeanSwe.MiniComp.Interface\nnamespace LeanSwe.MiniComp.Proofs\ntheorem obeys_model : Core.ObeysStepFrom id Model.compWf Model.execRaw Model.allowedRaw Model.compWf Internal.mkApiM Model.execPkg Model.allowedPkg := fun _ _ h => h\nend LeanSwe.MiniComp.Proofs\n")]
+      assertPass "closure_cross_proofs_direct_dep_ok"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      assertFailWith "closure_cross_proofs_split_root_leanswe_rejected" "TRUSTED_CLOSURE_UNALLOWED_IMPORT"
+        (← runCmd bin.toString #["--internal-closure-audit", "--strict-split-root", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv])
+      writeAndRecompile root libDir leanPath #[
+        ("LeanSwe/MiniGrand/Types.lean", "namespace LeanSwe.MiniGrand\ndef g : Nat := 1\nend LeanSwe.MiniGrand\n"),
+        ("LeanSwe/MiniGrand/Proofs.lean",
+         "import LeanSwe.MiniGrand.Types\nimport LeanSwe.MiniLeaf.Proofs\nnamespace LeanSwe.MiniGrand.Proofs\ntheorem g_ok : g = 1 := rfl\nend LeanSwe.MiniGrand.Proofs\n")]
+      assertFailWith "closure_cross_proofs_transitive_dep_rejected" "TRUSTED_CLOSURE_UNALLOWED_IMPORT"
+        (← runCmd bin.toString #["--internal-closure-audit", libDir.toString, root.toString, (root / "scripts/package_manifest.json").toString, baselineRootsCsv ++ ",LeanSwe.MiniGrand.Proofs"])
+      IO.FS.removeDirAll caseDir
+
     -- t-114(a): generic manifest closure rejects forbidden host IO externs in non-boundary packages.
     do
       let caseDir := tmpRoot / "case_closure_host_io"
@@ -827,7 +854,7 @@ def main (_ : List String) : IO UInt32 := do
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesConcCellTest.lean", bin.toString, tmpRoot.toString, baseDir.toString, realLibAbs.toString])
     assertPass "dag_suite"
       (← runCmd "lean" #["-DwarningAsError=true", "--run", "scripts/CheckPromisesDagTest.lean", bin.toString, tmpRoot.toString, realLibAbs.toString])
-    IO.println "CHECK_PROMISES_SELF_TEST: passed=84 failed=0"
+    IO.println "CHECK_PROMISES_SELF_TEST: passed=87 failed=0"
     return 0
   finally
     if ← tmpRoot.pathExists then IO.FS.removeDirAll tmpRoot

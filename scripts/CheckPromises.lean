@@ -1135,11 +1135,208 @@ private partial def isOnlyPromiseHeadInSig (ty : Expr) (u : Name) : Bool := Id.r
         return false
     return sawHead
 
+private def isTopLevelProofOrPropMod (knownPkgs : Array Name) (m : Name)
+    (strictSplitRoot : Bool := false) : Bool :=
+  if !isLeanSweMod m || isLeanSweUmbrella m || (strictSplitRoot && m.getRoot != `LeanSweProofs) then false
+  else
+    let nm := normalizeLeanSweMod m
+    let pkg := dagPkgOf knownPkgs nm
+    let rem := nm.components.drop pkg.components.length
+    rem == [`Proofs] || rem == [`Properties]
+
+private def isProofsSourceMod (knownPkgs : Array Name) (m : Name)
+    (strictSplitRoot : Bool := false) : Bool :=
+  if !isLeanSweMod m || isLeanSweUmbrella m || (strictSplitRoot && m.getRoot != `LeanSweProofs) then false
+  else
+    let nm := normalizeLeanSweMod m
+    let pkg := dagPkgOf knownPkgs nm
+    let rem := nm.components.drop pkg.components.length
+    match rem with
+    | `Proofs :: _ => true
+    | [`Verified] => true
+    | _ => false
+
+private def isDeclaredDirectDep (directDeps? : Option (Std.HashMap Name (Array Name)))
+    (srcPkg depPkg : Name) : Bool :=
+  match directDeps? with
+  | none => false
+  | some depsMap => (depsMap.get? srcPkg |>.map (·.contains depPkg)).getD false
+
+private def isNonemptyPredExpr (e : Expr) : Bool :=
+  match e.consumeMData with
+  | .const ``Nonempty _ => true
+  | .lam _ dom body _ =>
+    dom.consumeMData.isSort &&
+      body.consumeMData.isAppOfArity ``Nonempty 1 &&
+      body.consumeMData.appArg!.consumeMData == .bvar 0
+  | _ => false
+
+private def isPointedNonemptyInstance (env : Environment) (roleM : DagModuleRole) (c : ConstantInfo) : Bool :=
+  if roleM != .types then false
+  else
+    let cModIdx? := env.getModuleIdxFor? c.name
+    let pointedOpaqueName? (e : Expr) : Option Name :=
+      match e.consumeMData with
+      | .const oname _ =>
+        if isPrivateName oname && cModIdx?.isSome && env.getModuleIdxFor? oname == cModIdx? then
+          match env.find? oname with
+          | some (.opaqueInfo ov) =>
+            if ov.type.consumeMData.isConstOf ``NonemptyType then some oname else none
+          | _ => none
+        else none
+      | _ => none
+    let isPointedTypeProj (oname : Name) (e : Expr) : Bool :=
+      match e.consumeMData with
+      | .proj ``Subtype 0 s => s.consumeMData.isConstOf oname
+      | .proj ``NonemptyType 0 s => s.consumeMData.isConstOf oname
+      | e' =>
+        (e'.isAppOfArity ``Subtype.val 3 &&
+          let args := e'.getAppArgs
+          args[0]!.consumeMData.isSort && isNonemptyPredExpr args[1]! &&
+          args[2]!.consumeMData.isConstOf oname) ||
+        (e'.isAppOfArity `NonemptyType.type 1 && e'.appArg!.consumeMData.isConstOf oname)
+    let isPointedTypeArg (oname : Name) (e : Expr) : Bool :=
+      if isPointedTypeProj oname e then true
+      else
+        match e.consumeMData with
+        | .const tname _ =>
+          env.getModuleIdxFor? tname == cModIdx? &&
+            match env.find? tname with
+            | some (.defnInfo dv) =>
+              dv.type.consumeMData.isSort && isPointedTypeProj oname dv.value
+            | _ => false
+        | _ => false
+    match c with
+    | .thmInfo tv =>
+      if !(Lean.Meta.instanceExtension.getState env).instanceNames.contains c.name ||
+          !tv.type.consumeMData.isAppOfArity ``Nonempty 1 then
+        false
+      else
+        let oname? :=
+          match tv.value.consumeMData with
+          | .proj ``Subtype 1 s => pointedOpaqueName? s
+          | .proj ``NonemptyType 1 s => pointedOpaqueName? s
+          | e =>
+            if e.isAppOfArity ``Subtype.property 3 then
+              let args := e.getAppArgs
+              if args[0]!.consumeMData.isSort && isNonemptyPredExpr args[1]! then
+                pointedOpaqueName? args[2]!
+              else none
+            else if e.isAppOfArity `NonemptyType.property 1 then
+              pointedOpaqueName? e.appArg!
+            else none
+        match oname? with
+        | some oname => isPointedTypeArg oname tv.type.consumeMData.appArg!
+        | none => false
+    | _ => false
+
+private def isLayer1CompilerAuxThm (env : Environment) (c : ConstantInfo)
+    (roleM : DagModuleRole := .other) : Bool :=
+  let n := c.name
+  if env.isProjectionFn n || isPointedNonemptyInstance env roleM c then
+    true
+  else if (Lean.declRangeExt.find? env n).isSome then
+    false
+  else
+    let u := (privateToUserName? n).getD n
+    let s := nameLastStr u
+    let ps := nameLastStr u.getPrefix
+    isCompilerAuxThm env n || isLazyAuxModelSuffix s ||
+      s == "_sunfold" || s.startsWith "_cstage" || s == "rec" || s == "recOn" ||
+      s == "casesOn" || s == "binductionOn" || s == "ctorElim" ||
+      s == "ofNat_ctorIdx" || s == "_arg_pusher" ||
+      (s == "eq" && (ps == "brecOn" || (ps.startsWith "brecOn_" && !(ps.drop 7).isEmpty && (ps.drop 7).all Char.isDigit))) ||
+      (s.startsWith "_sizeOf_" && s.endsWith "_eq" &&
+        (let mid := (s.drop 8).dropEnd 3; !mid.isEmpty && mid.all Char.isDigit)) ||
+      (s.startsWith "_simp_" && !(s.drop 6).isEmpty && (s.drop 6).all Char.isDigit) ||
+      (s.startsWith "_eq_" && !(s.drop 4).isEmpty && (s.drop 4).all Char.isDigit) ||
+      u.components.any fun seg =>
+        let ss := seg.toString
+        ss.startsWith "match_" || ss.startsWith "_proof_" || ss.startsWith "_sparseCasesOn_"
+
+private partial def isPropOrPredExpr (env : Environment) (lctx : LocalContext) (nextId : Nat) (e : Expr) : Bool :=
+  match Lean.Kernel.whnf env lctx e with
+  | .error _ => true
+  | .ok w =>
+    match w with
+    | .sort .zero => true
+    | .sort (.succ _) => false
+    | .forallE n dom body bi =>
+      let fvId : FVarId := { name := .num `_l1_chk nextId }
+      let lctx' := lctx.mkLocalDecl fvId n dom bi .default
+      isPropOrPredExpr env lctx' (nextId + 1) (body.instantiate1 (.fvar fvId))
+    | _ =>
+      match Lean.Kernel.check env lctx w with
+      | .error _ => true
+      | .ok wTy =>
+        match Lean.Kernel.whnf env lctx wTy with
+        | .error _ => true
+        | .ok (.sort .zero) => true
+        | .ok _ => false
+
+private def isPropOrPredType (env : Environment) (levelParams : List Name) (type : Expr) : Bool :=
+  let lvls := levelParams.map fun _ => Level.succ .zero
+  let ty := type.instantiateLevelParams levelParams lvls
+  isPropOrPredExpr env {} 0 ty
+
+private def isPropOrPredDef (env : Environment) (dv : DefinitionVal) : Bool :=
+  isPropOrPredType env dv.levelParams dv.type
+
+private def collectSameModRuntimeReachable (env : Environment) (data : ModuleData) : Std.HashSet Name := Id.run do
+  let mut modConsts : Std.HashMap Name ConstantInfo := Std.HashMap.emptyWithCapacity data.constants.size
+  for c in data.constants do
+    modConsts := modConsts.insert c.name c
+  let mut work : Array Name := #[]
+  for c in data.constants do
+    if let .defnInfo dv := c then
+      let isSeedDef :=
+        !isPropOrPredDef env dv &&
+          ((Lean.declRangeExt.find? env c.name).isSome ||
+            match c.name with
+            | .str p "_unsafe_rec" =>
+              dv.safety == .partial && (Lean.declRangeExt.find? env p).isSome
+            | .str (.str structName fieldName) "_default" =>
+              let ownerStruct :=
+                if modConsts.contains structName then structName
+                else (privateToUserName? structName).getD structName
+              dv.safety == .safe &&
+                Lean.getDefaultFnForField? env ownerStruct (.str .anonymous fieldName) == some c.name &&
+                (Lean.declRangeExt.find? env ownerStruct).isSome &&
+                match modConsts.get? ownerStruct with
+                | some (.inductInfo iv) => !isPropOrPredType env iv.levelParams iv.type
+                | _ => false
+            | _ => false)
+      if isSeedDef then
+        for u in dv.type.getUsedConstants ++ dv.value.getUsedConstants do
+          if modConsts.contains u then
+            work := work.push u
+  let mut reachable : Std.HashSet Name := {}
+  while !work.isEmpty do
+    let u := work.back!
+    work := work.pop
+    if reachable.contains u then continue
+    reachable := reachable.insert u
+    match modConsts.get? u with
+    | some c@(.thmInfo tv) =>
+      if isPrivateName u || isLayer1CompilerAuxThm env c then
+        for w in tv.type.getUsedConstants ++ tv.value.getUsedConstants do
+          if modConsts.contains w && !reachable.contains w then
+            work := work.push w
+    | some (.defnInfo dv) =>
+      if (Lean.declRangeExt.find? env u).isNone then
+        for w in dv.type.getUsedConstants ++ dv.value.getUsedConstants do
+          if modConsts.contains w && !reachable.contains w then
+            work := work.push w
+    | _ => pure ()
+  return reachable
+
 private def auditImportDagEnv
     (env : Environment)
     (includeMod : Name → Bool)
     (allPassMap canReachMap : Std.HashMap Name (Array Name))
-    (scanPublicAllPassDirect : Bool := false) : DagAuditReport := Id.run do
+    (scanPublicAllPassDirect : Bool := false)
+    (directDeps? : Option (Std.HashMap Name (Array Name)) := none)
+    (strictSplitRoot : Bool := false) : DagAuditReport := Id.run do
   let knownPkgs := discoverDagPackages env.header.moduleNames
   let trans := computeLeanSweTransImports env
   let mut nonProofUsers : Std.HashSet Name := {}
@@ -1164,6 +1361,8 @@ private def auditImportDagEnv
     let mut cur := u
     let mut stripped := false
     while true do
+      if env.contains cur && (Lean.declRangeExt.find? env cur).isSome then
+        return cur
       match cur with
       | .str p s =>
         if isLazyAuxModelSuffix s then
@@ -1178,6 +1377,13 @@ private def auditImportDagEnv
   let mut checkedModules : Nat := 0
   for h : i in [0 : env.header.moduleNames.size] do
     let m := env.header.moduleNames[i]
+    if m == `LeanSwe && includeMod m then
+      if let some rootData := env.header.moduleData[i]? then
+        for c in rootData.constants do
+          if c matches .thmInfo _ && !isLayer1CompilerAuxThm env c then
+            let key := s!"LAYER1_THM|{m}|{stableConstLabel c.name}"
+            let msg := s!"LAYER1_THEOREM_FORBIDDEN: {stableConstLabel c.name} in {m} (Umbrella) is forbidden in Layer 1; move theorems to proofs/LeanSweProofs/<Pkg>/Proofs.lean or proofs/LeanSweProofs/<Pkg>/Properties.lean"
+            violations := recordDagViolation violations key msg
     if !isLeanSweMod m || isLeanSweUmbrella m || !includeMod m then continue
     let some data := env.header.moduleData[i]? | continue
     checkedModules := checkedModules + 1
@@ -1236,11 +1442,37 @@ private def auditImportDagEnv
       if !isLeanSweMod t || isLeanSweUmbrella t then continue
       let pkgT := dagPkgOf knownPkgs t
       let roleT := dagRoleOf knownPkgs t
-      if pkgM != pkgT && roleT != .types && roleT != .model && roleT != .iface then
+      let allowedCrossProofImport :=
+        isProofsSourceMod knownPkgs m strictSplitRoot &&
+          isTopLevelProofOrPropMod knownPkgs t strictSplitRoot &&
+          isDeclaredDirectDep directDeps? pkgM pkgT
+      if pkgM != pkgT && roleT != .types && roleT != .model && roleT != .iface && !allowedCrossProofImport then
         directCrossNonPublic := directCrossNonPublic.insert t
         let key := s!"CROSS|{m}|{t}"
-        let msg := s!"DAG_CROSS_IMPORT_VIOLATION: {m} ({roleM.label}) directly imports cross-package {t} ({roleT.label}; only Types/Model/Interface allowed)"
+        let msg := s!"DAG_CROSS_IMPORT_VIOLATION: {m} ({roleM.label}) directly imports cross-package {t} ({roleT.label}; only Types/Model/Interface or direct-dep top-level Proofs/Properties allowed)"
         violations := recordDagViolation violations key msg
+    let isStrictLayer1NoThm :=
+      roleM == .types || roleM == .iface || roleM == .other || roleM == .umbrella ||
+        roleM == .testSupport || roleM == .runtimeTests ||
+        (strictSplitRoot && roleM != .impl && roleM != .sysBridge)
+    if m.getRoot == `LeanSwe && (isStrictLayer1NoThm || roleM == .impl || roleM == .sysBridge) then
+      let pkgRel := String.intercalate "/" (pkgM.components.drop 1 |>.map (·.toString))
+      let runtimeReach :=
+        if roleM == .impl || roleM == .sysBridge then collectSameModRuntimeReachable env data else {}
+      for c in data.constants do
+        if c matches .thmInfo _ && !isLayer1CompilerAuxThm env c roleM then
+          if isStrictLayer1NoThm then
+            let key := s!"LAYER1_THM|{m}|{stableConstLabel c.name}"
+            let msg := s!"LAYER1_THEOREM_FORBIDDEN: {stableConstLabel c.name} in {m} ({roleM.label}) is forbidden in Layer 1; move theorems to proofs/LeanSweProofs/{pkgRel}/Proofs.lean or proofs/LeanSweProofs/{pkgRel}/Properties.lean"
+            violations := recordDagViolation violations key msg
+          else if !isPrivateName c.name then
+            let key := s!"LAYER1_PUB_THM|{m}|{c.name}"
+            let msg := s!"LAYER1_PUBLIC_THEOREM_FORBIDDEN: {c.name} in {m} ({roleM.label}) is a public theorem in Layer 1; move it to proofs/LeanSweProofs/{pkgRel}/Proofs.lean or proofs/LeanSweProofs/{pkgRel}/Properties.lean (or mark private if used by a same-file runtime def)"
+            violations := recordDagViolation violations key msg
+          else if !runtimeReach.contains c.name then
+            let key := s!"LAYER1_UNUSED_THM|{m}|{stableConstLabel c.name}"
+            let msg := s!"LAYER1_UNUSED_PRIVATE_THEOREM: {stableConstLabel c.name} in {m} ({roleM.label}) is not referenced by any same-file runtime def; move it to proofs/LeanSweProofs/{pkgRel}/Proofs.lean or proofs/LeanSweProofs/{pkgRel}/Properties.lean"
+            violations := recordDagViolation violations key msg
     for c in data.constants do
       let uName := (privateToUserName? c.name).getD c.name
       if roleM.isDisallowedSpecOrSigRole && isModelNamespaceDeclName uName && !isCompilerLazyModelAux env nonProofUsers c then
@@ -1308,13 +1540,29 @@ private def auditImportDagEnv
           let pkgU := dagPkgOf knownPkgs um
           if pkgU != pkgM then
             let roleU := dagRoleOf knownPkgs um
+            let uUser := (privateToUserName? uOrigin).getD uOrigin
             if roleU != .types && roleU != .model && roleU != .iface then
-              if !directCrossNonPublic.contains um then
-                let key := s!"CROSS_REF|{m}|{um}"
-                let msg := s!"DAG_CROSS_REACHIN_VIOLATION: {m} ({roleM.label}) reaches into cross-package {um} ({roleU.label}) via {stableConstLabel c.name} -> {stableConstLabel u}"
+              let uMod := modOf u
+              let uActualUser := (privateToUserName? u).getD u
+              let isPublicProofThm :=
+                !isPrivateName u && !uActualUser.components.contains `Internal &&
+                  !env.isProjectionFn u && (Lean.declRangeExt.find? env u).isSome &&
+                  match env.find? u with
+                  | some (.thmInfo _) => true
+                  | _ => false
+              let allowedCrossProofRef :=
+                isProofsSourceMod knownPkgs m strictSplitRoot &&
+                  isTopLevelProofOrPropMod knownPkgs uMod strictSplitRoot &&
+                  isDeclaredDirectDep directDeps? pkgM (dagPkgOf knownPkgs uMod) &&
+                  isPublicProofThm
+              let reportMod :=
+                if isLeanSweMod uMod && !isLeanSweUmbrella uMod && dagPkgOf knownPkgs uMod != pkgM then uMod
+                else um
+              if !allowedCrossProofRef && !directCrossNonPublic.contains um && !directCrossNonPublic.contains reportMod then
+                let key := s!"CROSS_REF|{m}|{reportMod}"
+                let msg := s!"DAG_CROSS_REACHIN_VIOLATION: {m} ({roleM.label}) reaches into cross-package {reportMod} ({(dagRoleOf knownPkgs reportMod).label}) via {stableConstLabel c.name} -> {stableConstLabel u}"
                 violations := recordDagViolation violations key msg
             else
-              let uUser := (privateToUserName? uOrigin).getD uOrigin
               if uUser.components.contains `Internal then
                 let key := s!"CROSS_INTERNAL|{m}|{um}|{uUser}"
                 let msg := s!"DAG_CROSS_INTERNAL_REACHIN: {m} ({roleM.label}) references cross-package internal constant {uUser} in {um}"
@@ -1398,6 +1646,12 @@ private structure PackageManifest where
   version : Nat
   packages : Std.HashMap Name ManifestPkgSpec
   deriving Inhabited
+
+private def manifestDirectDeps (manifest : PackageManifest) : Std.HashMap Name (Array Name) := Id.run do
+  let mut out : Std.HashMap Name (Array Name) := {}
+  for (pkg, spec) in manifest.packages.toList do
+    out := out.insert pkg spec.deps
+  return out
 
 private def parsePackageManifest (raw : String) : Except String PackageManifest := do
   let json ← Lean.Json.parse raw |>.mapError (fun e => s!"MANIFEST_SCHEMA_ERROR: invalid JSON ({e})")
@@ -1875,7 +2129,8 @@ private def roleExemptMask (r : DagModuleRole) : UInt8 :=
 
 private def checkManifestTrustedClosures
     (repoDir : System.FilePath) (env : Environment) (manifest : PackageManifest)
-    (includeMod : Name → Bool) (checkSource : Bool := true) (inVerifiedWorker : Bool := false) :
+    (includeMod : Name → Bool) (checkSource : Bool := true) (inVerifiedWorker : Bool := false)
+    (strictSplitRoot : Bool := false) :
     IO (Array String × Nat) := do
   let knownPkgs := discoverDagPackages env.header.moduleNames
   let csimpState := Lean.Compiler.CSimp.ext.getState env
@@ -1917,8 +2172,13 @@ private def checkManifestTrustedClosures
         else
           let impPkg := dagPkgOf knownPkgs im
           let impRole := dagRoleOf knownPkgs im
+          let isDirectDep := spec?.map (·.deps.contains impPkg) |>.getD false
           if !allowedPkgs.contains impPkg then
             errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports {im} (undeclared dep {impPkg} for {pkg})"
+          else if impPkg != pkg && (impRole == .proofs || impRole == .properties) &&
+              !(isProofsSourceMod knownPkgs m strictSplitRoot &&
+                isDirectDep && isTopLevelProofOrPropMod knownPkgs im strictSplitRoot) then
+            errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports cross-package {im} (requires Proofs -> declared direct dep top-level Proofs/Properties)"
           else if impRole == .runtimeTests ||
               (impRole == .specMutants && !(impPkg == pkg && (role == .specMutants || nameLastStr m == "Verified"))) then
             errs := errs.push s!"TRUSTED_CLOSURE_UNALLOWED_IMPORT: {m} imports {im}"
@@ -1965,7 +2225,7 @@ private def checkManifestTrustedClosures
     if m != `Core.Assumptions && role != .runtimeTests && role != .specMutants then
       for c in data.constants do
         if !(c.name == `Core.ioConcOps || c.name == `Core.ioStateCell) then
-          let isProofThm := (role == .proofs || role == .iface) && (c matches .thmInfo _)
+          let isProofThm := role == .proofs && (c matches .thmInfo _)
           queue := queue.push (m, role, false, isBoundaryIface, isProofThm, c.name)
 
   let isProofRefPrim (cName : Name) (extData : ExternAttrData) : Bool :=
@@ -4252,22 +4512,37 @@ private unsafe def auditPromisesEnv
 /-- Audit compiled `.olean` artifacts reachable from `LeanSwe` for promise coverage. -/
 unsafe def main (args : List String) : IO UInt32 := do
   if args.head? == some "--internal-dag-audit" then
-    match args.drop 1 with
-    | [libDirStr, rootsCsv] =>
+    let rest0 := args.drop 1
+    let strictSplit := rest0.head? == some "--strict-split-root"
+    let rest1 := if strictSplit then rest0.drop 1 else rest0
+    let parsed? : Option (String × String × Option String) := match rest1 with
+      | [libDirStr, rootsCsv] => some (libDirStr, rootsCsv, none)
+      | [libDirStr, rootsCsv, manifestPathStr] => some (libDirStr, rootsCsv, some manifestPathStr)
+      | _ => none
+    match parsed? with
+    | some (libDirStr, rootsCsv, manifestPathStr?) =>
+      let directDeps? ← match manifestPathStr? with
+        | none => pure none
+        | some mp =>
+          let raw ← IO.FS.readFile mp
+          match parsePackageManifest raw with
+          | .error err =>
+            IO.eprintln err
+            return 1
+          | .ok man => pure (some (manifestDirectDeps man))
       let libDir : System.FilePath := libDirStr
       let rootMods := (rootsCsv.splitOn ",").filter (!·.isEmpty) |>.toArray.map (·.toName)
       initSearchPath (← findSysroot) [libDir]
       enableInitializersExecution
       let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
-      let rep := auditImportDagEnv testEnv (fun _ => true) {} {} (scanPublicAllPassDirect := true)
+      let rep := auditImportDagEnv testEnv (fun _ => true) {} {} (scanPublicAllPassDirect := true) (directDeps? := directDeps?) (strictSplitRoot := strictSplit)
       let errs := formatDagAuditErrors rep
       IO.println s!"DAG_AUDIT_TEST: modules={rep.checkedModules} edges_obs={rep.violations.size} sig_obs={rep.sigProofCounts.size} errors={errs.size}"
       for e in errs do
         IO.eprintln e
-      testEnv.freeRegions
       return if errs.isEmpty then 0 else 1
-    | _ =>
-      IO.eprintln "USAGE_ERROR: --internal-dag-audit <libDir> <rootsCsv>"
+    | none =>
+      IO.eprintln "USAGE_ERROR: --internal-dag-audit [--strict-split-root] <libDir> <rootsCsv> [manifestPath]"
       return 1
   if args.head? == some "--internal-manifest-audit" then
     match args.drop 1 with
@@ -4325,7 +4600,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.eprintln "USAGE_ERROR: --internal-promise-manifest-audit <libDir> <repoDir> <manifestPath> <rootsCsv>"
       return 1
   if args.head? == some "--internal-closure-audit" then
-    match args.drop 1 with
+    let (strictSplit, restArgs) :=
+      match args.drop 1 with
+      | "--strict-split-root" :: rest => (true, rest)
+      | rest => (false, rest)
+    match restArgs with
     | [libDirStr, repoDirStr, manifestPathStr, rootsCsv] =>
       let libDir : System.FilePath := libDirStr
       let repoDir : System.FilePath := repoDirStr
@@ -4339,14 +4618,14 @@ unsafe def main (args : List String) : IO UInt32 := do
         initSearchPath (← findSysroot) [libDir]
         enableInitializersExecution
         let testEnv ← importModules (rootMods.map fun m => { module := m }) {} (loadExts := true)
-        let (errs, modCnt) ← checkManifestTrustedClosures repoDir testEnv manifest (fun m => isLeanSweMod m)
+        let (errs, modCnt) ← checkManifestTrustedClosures repoDir testEnv manifest (fun m => isLeanSweMod m) (strictSplitRoot := strictSplit)
         IO.println s!"CLOSURE_AUDIT_TEST: modules={modCnt} errors={errs.size}"
         for e in errs do
           IO.eprintln e
         testEnv.freeRegions
         return if errs.isEmpty then 0 else 1
     | _ =>
-      IO.eprintln "USAGE_ERROR: --internal-closure-audit <libDir> <repoDir> <manifestPath> <rootsCsv>"
+      IO.eprintln "USAGE_ERROR: --internal-closure-audit [--strict-split-root] <libDir> <repoDir> <manifestPath> <rootsCsv>"
       return 1
   if args.head? == some "--internal-print-obeys-sig" then
     match args.drop 1 with
@@ -4425,7 +4704,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       let libDir : System.FilePath := libDirStr
       let repoDir : System.FilePath := repoDirStr
       let isVMod := isVerifiedOnlyMod verifiedMod
-      let (_, _, libDirs) ← resolveRepoLibDirs libDir repoDir
+      let (hasProofsTreeW, _, libDirs) ← resolveRepoLibDirs libDir repoDir
       initSearchPath (← findSysroot) libDirs
       enableInitializersExecution
       let vEnv ← importModules #[{ module := verifiedMod }] {} (loadExts := true)
@@ -4435,11 +4714,11 @@ unsafe def main (args : List String) : IO UInt32 := do
       let manifestRes ← loadPackageManifest repoDir
       let rep2 ← auditPromisesEnv libDirs repoDir vEnv manifestRes.toOption isVMod true
       let (vAeneasErrs, _) := checkGenericAeneasApiWiring vEnv verifiedPkg
-      let vDagRep := auditImportDagEnv vEnv isVMod rep2.allPass rep2.canReach
+      let vDagRep := auditImportDagEnv vEnv isVMod rep2.allPass rep2.canReach false (manifestRes.toOption.map manifestDirectDeps) hasProofsTreeW
       let (vClosureErrs, vManifestParseErrs) ← match manifestRes with
         | .error err => pure (#[], #[err])
         | .ok manifest => do
-          let (cErrs, _) ← checkManifestTrustedClosures repoDir vEnv manifest isVMod true true
+          let (cErrs, _) ← checkManifestTrustedClosures repoDir vEnv manifest isVMod true true hasProofsTreeW
           let vMRep ← auditManifestAndWiring vEnv manifest (some verifiedPkg)
           for hErr in vMRep.hardErrors do
             IO.println s!"PFW_M_HARD:{hErr}"
@@ -4745,7 +5024,7 @@ unsafe def main (args : List String) : IO UInt32 := do
             errors := errors.push metaErr
             break
     let exDag := auditImportDagEnv extraEnv
-      (fun m => !visited.contains m && !isAnyVerifiedOnlyMod m) {} {} true
+      (fun m => !visited.contains m && !isAnyVerifiedOnlyMod m) {} {} true (manifestRes.toOption.map manifestDirectDeps) hasProofsTree
     pure (extraEnv, exDag)
   else
     pure (env, {})
@@ -4801,7 +5080,7 @@ unsafe def main (args : List String) : IO UInt32 := do
   let cr1 := rep1.canReach
   let wAss1 := rep1.assumesCount
 
-  let mainDagRep := auditImportDagEnv env (fun m => !isAnyVerifiedOnlyMod m) ap1 cr1
+  let mainDagRep := auditImportDagEnv env (fun m => !isAnyVerifiedOnlyMod m) ap1 cr1 false (manifestRes.toOption.map manifestDirectDeps) hasProofsTree
   let combinedDagRep := mergeDagReports (mergeDagReports mainDagRep pfDagRep) extraDagRep
   let dagErrs := formatDagAuditErrors combinedDagRep
   let totalSigHits := combinedDagRep.sigProofCounts.fold (init := 0) fun acc _ (cnt, _) => acc + cnt
@@ -4812,7 +5091,7 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.println s!"MANIFEST_WIRING_CHECK: status=parse_error errors=1"
       pure (#[], #[err])
     | .ok manifest =>
-      let (cErrs, cMods) ← checkManifestTrustedClosures repoDir env manifest (fun m => !isAnyVerifiedOnlyMod m)
+      let (cErrs, cMods) ← checkManifestTrustedClosures repoDir env manifest (fun m => !isAnyVerifiedOnlyMod m) (strictSplitRoot := hasProofsTree)
       IO.println s!"TRUSTED_CLOSURE: modules={cMods} packages={manifest.packages.size} errors={cErrs.size}"
       let rawManifestRep ← auditManifestAndWiring env manifest
       let mut mergedModelObs := rawManifestRep.modelPresenceObs
