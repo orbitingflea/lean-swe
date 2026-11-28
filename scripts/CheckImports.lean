@@ -54,7 +54,7 @@ private def allRoleMarkerSegments : Array String :=
     "SpecTests", "SpecMutants", "Verified", "Aeneas", "RuntimeTests", "TestSupport"]
 
 private def modelForbiddenImpRoles : Array String :=
-  #["Impl", "SysBridge", "Proofs", "SpecTests", "SpecMutants", "Verified", "Aeneas"]
+  #["Impl", "SysBridge", "Proofs", "Properties", "SpecTests", "SpecMutants", "Verified", "Aeneas"]
 
 private def proofsCrossForbiddenImpRoles : Array String :=
   #["Impl", "SysBridge", "Aeneas", "SpecTests", "SpecMutants", "Verified", "Proofs", "Properties"]
@@ -116,7 +116,45 @@ private def fuzzSuiteLeaf? (normPath : String) : Option String :=
       if leaf == "Common" || leaf == "LinuxSyscall" then none else some leaf
     | _ => none
 
-private def checkLayerImportPolicy (relPath policyPath : String) (lineNo : Nat) (mod : Name) : Option String :=
+private def parseManifestDirectDeps (raw : String) : Except String (Std.HashMap String (Array String)) := do
+  let json ← Lean.Json.parse raw |>.mapError (fun e => s!"invalid package_manifest.json: {e}")
+  let pkgsJson ← json.getObjVal? "packages" |>.mapError (fun _ => "package_manifest.json missing 'packages'")
+  let .obj pkgsObj := pkgsJson | .error "package_manifest.json 'packages' must be an object"
+  let mut out : Std.HashMap String (Array String) := {}
+  for (pkgStr, entry) in pkgsObj do
+    let depsJson ← entry.getObjVal? "deps" |>.mapError (fun _ => s!"package_manifest.json: {pkgStr} missing 'deps'")
+    let .arr depsArr := depsJson | .error s!"package_manifest.json: {pkgStr} 'deps' must be an array"
+    let mut deps : Array String := #[]
+    for d in depsArr do
+      match d.getStr? with
+      | .ok ds => deps := deps.push ds
+      | .error _ => .error s!"package_manifest.json: {pkgStr} 'deps' entry must be a string"
+    out := out.insert pkgStr deps
+  return out
+
+private def loadManifestDirectDeps? (repoRoot? : Option System.FilePath) :
+    IO (Except String (Option (Std.HashMap String (Array String)))) := do
+  let some root := repoRoot? | return .ok none
+  let manifestPath := root / "scripts" / "package_manifest.json"
+  let meta? ← try
+    some <$> manifestPath.symlinkMetadata
+  catch
+    | IO.Error.noFileOrDirectory .. => pure none
+    | e => return .error s!"failed to inspect '{manifestPath}': {e}"
+  let some md := meta? | return .ok none
+  if md.type == .symlink then
+    unless ← manifestPath.pathExists do
+      return .error s!"broken symlink at '{manifestPath}'"
+  let raw ← try
+    IO.FS.readFile manifestPath
+  catch e =>
+    return .error s!"failed to read '{manifestPath}': {e}"
+  match parseManifestDirectDeps raw with
+  | .ok m => return .ok (some m)
+  | .error e => return .error s!"{manifestPath}: {e}"
+
+private def checkLayerImportPolicy (relPath policyPath : String) (lineNo : Nat) (mod : Name)
+    (directDeps? : Option (Std.HashMap String (Array String)) := none) : Option String :=
   let normPath := normalizeRelPath policyPath
   let modStr := mod.toString
   let segs := normalizedModSegments mod
@@ -140,9 +178,35 @@ private def checkLayerImportPolicy (relPath policyPath : String) (lineNo : Nat) 
           some s!"{relPath}:{lineNo}: Layer 2 Model file forbids cross-package Aeneas import '{modStr}'"
         else
           none
-      else if srcRole == "Proofs" || srcRole == "Properties" then
+      else if srcRole == "SpecTests" || srcRole == "SpecMutants" then
         if impPkg != srcPkg && (impRem.head? == some "Aeneas" || proofsCrossForbiddenImpRoles.contains impRole) then
           some s!"{relPath}:{lineNo}: Layer 2 {srcRole} file forbids cross-package direct import '{modStr}' (only Types/Model/Interface allowed)"
+        else
+          none
+      else if srcRole == "Proofs" then
+        if impPkg != srcPkg then
+          let isTopLevelCrossProof :=
+            rootSeg == "LeanSweProofs" && (impRem == ["Proofs"] || impRem == ["Properties"])
+          if isTopLevelCrossProof then
+            match directDeps? with
+            | some depMap =>
+              let srcPkgStr := ".".intercalate srcPkg
+              let impPkgStr := ".".intercalate impPkg
+              if (depMap.get? srcPkgStr |>.map (·.contains impPkgStr)).getD false then
+                none
+              else
+                some s!"{relPath}:{lineNo}: Layer 2 Proofs file forbids cross-package direct import '{modStr}' ({impPkgStr} is not a declared direct dependency of {srcPkgStr})"
+            | none =>
+              some s!"{relPath}:{lineNo}: Layer 2 Proofs file forbids cross-package direct import '{modStr}' (cannot verify direct dependency without scripts/package_manifest.json)"
+          else if impRem.head? == some "Aeneas" || proofsCrossForbiddenImpRoles.contains impRole then
+            some s!"{relPath}:{lineNo}: Layer 2 Proofs file forbids cross-package direct import '{modStr}' (only Types/Model/Interface or direct-dep top-level LeanSweProofs.<Pkg>.Proofs/Properties allowed)"
+          else
+            none
+        else
+          none
+      else if srcRole == "Properties" then
+        if impPkg != srcPkg && (impRem.head? == some "Aeneas" || proofsCrossForbiddenImpRoles.contains impRole) then
+          some s!"{relPath}:{lineNo}: Layer 2 Properties file forbids cross-package direct import '{modStr}' (only Types/Model/Interface allowed)"
         else
           none
       else
@@ -343,7 +407,8 @@ private def firstNulLine? (rawSrc : String) : Option Nat :=
   (rawSrc.find? "\x00").map fun p => ((FileMap.ofString rawSrc).toPosition p.offset).line
 
 private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc : String)
-    (policyPath? : Option String := none) : IO (Nat × Array String) := do
+    (policyPath? : Option String := none)
+    (directDeps? : Option (Std.HashMap String (Array String)) := none) : IO (Nat × Array String) := do
   let mut violations : Array String := #[]
   let bomBytes := countLeadingUtf8BomBytes bytes
   let (hadBom, src) :=
@@ -390,7 +455,7 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
     if isForbiddenUmbrellaImport imp.module then
       violations := violations.push
         s!"{relPath}:{lineNo}: disallowed umbrella import '{modStr}' (import specific submodule(s) instead, e.g. 'Mathlib.Data.Nat.Basic')"
-    if let some layerErr := checkLayerImportPolicy relPath (policyPath?.getD relPath) lineNo imp.module then
+    if let some layerErr := checkLayerImportPolicy relPath (policyPath?.getD relPath) lineNo imp.module directDeps? then
       violations := violations.push layerErr
 
   if let some err := checkPostHeaderLeadingImport relPath bytes bomBytes inputCtx.fileMap pst.pos then
@@ -398,14 +463,16 @@ private def checkSourceWithBytes (relPath : String) (bytes : ByteArray) (rawSrc 
 
   return (imps.size, violations)
 
-private def checkSourceText (relPath : String) (rawSrc : String) : IO (Nat × Array String) :=
-  checkSourceWithBytes relPath rawSrc.toUTF8 rawSrc
+private def checkSourceText (relPath : String) (rawSrc : String)
+    (directDeps? : Option (Std.HashMap String (Array String)) := none) : IO (Nat × Array String) :=
+  checkSourceWithBytes relPath rawSrc.toUTF8 rawSrc none directDeps?
 
 private def checkFileBytes (relPath : String) (bytes : ByteArray)
-    (policyPath? : Option String := none) : IO (Nat × Array String) := do
+    (policyPath? : Option String := none)
+    (directDeps? : Option (Std.HashMap String (Array String)) := none) : IO (Nat × Array String) := do
   let some rawSrc := String.fromUTF8? bytes
     | return (0, #[s!"{relPath}:1: invalid UTF-8 encoding (cannot decode Lean source file)"])
-  checkSourceWithBytes relPath bytes rawSrc policyPath?
+  checkSourceWithBytes relPath bytes rawSrc policyPath? directDeps?
 
 private def isSkippedWalkDir (relPath fileName : String) : Bool :=
   fileName == ".git" ||
@@ -564,12 +631,18 @@ private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
     catch e =>
       return { errors := #[s!"failed to read '{target}': {e}"] }
     let repoRoot? ← findEnclosingRepoRoot (absTarget.parent.getD absTarget)
+    let directDeps? ← match ← loadManifestDirectDeps? repoRoot? with
+      | .ok d => pure d
+      | .error e => return { errors := #[e] }
     let policyPath := policyPathForFile repoRoot? absTarget target.toString
-    let (impCount, viols) ← checkFileBytes target.toString bytes (some policyPath)
+    let (impCount, viols) ← checkFileBytes target.toString bytes (some policyPath) directDeps?
     return { checked := 1, imports := impCount, violations := viols }
   | .dir =>
     let isGitRoot ← (absTarget / ".git").pathExists
     let repoRoot? ← if isGitRoot then pure (some absTarget) else findEnclosingRepoRoot absTarget
+    let directDeps? ← match ← loadManifestDirectDeps? repoRoot? with
+      | .ok d => pure d
+      | .error e => return { errors := #[e] }
     let relPaths ← if isGitRoot then
       match ← gitListLeanFiles resolvedTarget with
       | .ok ps => pure ps
@@ -594,7 +667,7 @@ private def checkTargetPath (target : System.FilePath) : IO CheckSummary := do
           errors := errors.push s!"failed to read '{relPath}': {e}"
           continue
         let policyPath := policyPathForFile repoRoot? absFilePath relPath
-        let (impCount, viols) ← checkFileBytes relPath bytes (some policyPath)
+        let (impCount, viols) ← checkFileBytes relPath bytes (some policyPath) directDeps?
         totalImports := totalImports + impCount
         violations := violations ++ viols
       | some .symlink => pure ()
@@ -1250,6 +1323,7 @@ private def runSelfTests : IO UInt32 := do
     ("l2_model_imports_impl", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSwe.Demo.Impl\n", "Layer 2 Model file forbids importing"),
     ("l2_model_imports_sysbridge", "proofs/LeanSweProofs/Demo/Model/Sub.lean", "import LeanSwe.Demo.SysBridge\n", "Layer 2 Model file forbids importing"),
     ("l2_model_imports_proofs", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Proofs\n", "Layer 2 Model file forbids importing"),
+    ("l2_model_imports_properties", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Properties\n", "Layer 2 Model file forbids importing"),
     ("l2_model_imports_spectests", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.SpecTests\n", "Layer 2 Model file forbids importing"),
     ("l2_model_imports_specmutants", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.SpecMutants\n", "Layer 2 Model file forbids importing"),
     ("l2_model_imports_verified", "proofs/LeanSweProofs/Demo/Model.lean", "import LeanSweProofs.Demo.Verified\n", "Layer 2 Model file forbids importing"),
@@ -1260,7 +1334,14 @@ private def runSelfTests : IO UInt32 := do
     ("l2_proofs_cross_spectests", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.SpecTests\n", "Layer 2 Proofs file forbids cross-package"),
     ("l2_proofs_cross_specmutants", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.SpecMutants\n", "Layer 2 Proofs file forbids cross-package"),
     ("l2_proofs_cross_verified", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Verified\n", "Layer 2 Proofs file forbids cross-package"),
-    ("l2_proofs_cross_proofs", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Proofs\n", "Layer 2 Proofs file forbids cross-package"),
+    ("l2_proofs_cross_no_manifest_proofs", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Proofs\n", "without scripts/package_manifest.json"),
+    ("l2_proofs_cross_no_manifest_props", "proofs/LeanSweProofs/Demo/Proofs/Sub.lean", "import LeanSweProofs.Other.Properties\n", "without scripts/package_manifest.json"),
+    ("l2_proofs_cross_proofs_sub", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Proofs.Sub\n", "only Types/Model/Interface or direct-dep top-level"),
+    ("l2_proofs_cross_properties_sub", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSweProofs.Other.Properties.Sub\n", "only Types/Model/Interface or direct-dep top-level"),
+    ("l2_proofs_cross_leanswe_root_proofs", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Other.Proofs\n", "only Types/Model/Interface or direct-dep top-level"),
+    ("l2_proofs_cross_leanswe_root_props", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Other.Properties\n", "only Types/Model/Interface or direct-dep top-level"),
+    ("l2_spectests_cross_proofs", "proofs/LeanSweProofs/Demo/SpecTests.lean", "import LeanSweProofs.Other.Proofs\n", "Layer 2 SpecTests file forbids cross-package"),
+    ("l2_specmutants_cross_proofs", "proofs/LeanSweProofs/Demo/SpecMutants.lean", "import LeanSweProofs.Other.Proofs\n", "Layer 2 SpecMutants file forbids cross-package"),
     ("l2_properties_cross_properties", "proofs/LeanSweProofs/Demo/Properties.lean", "import LeanSweProofs.Other.Properties\n", "Layer 2 Properties file forbids cross-package"),
     ("l2_parent_vs_raw_cross_impl", "proofs/LeanSweProofs/Demo/Proofs.lean", "import LeanSwe.Demo.Raw.Impl\n", "Layer 2 Proofs file forbids cross-package"),
     ("l3_fuzz_spectests", "harness/Fuzz/Demo/Suite.lean", "import LeanSweProofs.Demo.SpecTests\n", "Layer 3 harness forbids importing"),
@@ -1284,6 +1365,55 @@ private def runSelfTests : IO UInt32 := do
       (!errs.isEmpty && errs.any (containsSubstr · needle))
       s!"got {errs}"
     checks := checks + 1
+
+  let depMap : Std.HashMap String (Array String) :=
+    ({} : Std.HashMap String (Array String))
+      |>.insert "LeanSwe.Demo" #["LeanSwe.Other"]
+      |>.insert "LeanSwe.Other" #["LeanSwe.Grand"]
+      |>.insert "LeanSwe.Grand" #[]
+  let (_, depOkErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/Proofs.lean"
+    "import LeanSweProofs.Other.Proofs\nimport LeanSweProofs.Other.Properties\n" (some depMap)
+  assertTrue "layer_ok:l2_proofs_direct_dep_manifest" depOkErrs.isEmpty s!"got {depOkErrs}"
+  checks := checks + 1
+  let (_, depSubOkErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/Proofs/Sub.lean"
+    "import LeanSweProofs.Other.Proofs\nimport LeanSweProofs.Other.Properties\n" (some depMap)
+  assertTrue "layer_ok:l2_proofs_sub_direct_dep_manifest" depSubOkErrs.isEmpty s!"got {depSubOkErrs}"
+  checks := checks + 1
+  let (_, nonDepErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/Proofs.lean"
+    "import LeanSweProofs.Unrelated.Proofs\n" (some depMap)
+  assertTrue "layer_reject:l2_proofs_non_dep_manifest"
+    (nonDepErrs.size == 1 && containsSubstr nonDepErrs[0]! "not a declared direct dependency")
+    s!"got {nonDepErrs}"
+  checks := checks + 1
+  let (_, transDepErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/Proofs.lean"
+    "import LeanSweProofs.Grand.Proofs\n" (some depMap)
+  assertTrue "layer_reject:l2_proofs_transitive_dep_manifest"
+    (transDepErrs.size == 1 && containsSubstr transDepErrs[0]! "not a declared direct dependency")
+    s!"got {transDepErrs}"
+  checks := checks + 1
+  for (label, impLine) in #[
+    ("l2_proofs_sub_manifest", "import LeanSweProofs.Other.Proofs.Sub\n"),
+    ("l2_properties_sub_manifest", "import LeanSweProofs.Other.Properties.Sub\n"),
+    ("l2_leanswe_root_proofs_manifest", "import LeanSwe.Other.Proofs\n"),
+    ("l2_leanswe_root_props_manifest", "import LeanSwe.Other.Properties\n")
+  ] do
+    let (_, errs) ← checkSourceText "proofs/LeanSweProofs/Demo/Proofs.lean" impLine (some depMap)
+    assertTrue s!"layer_reject:{label}"
+      (errs.size == 1 && containsSubstr errs[0]! "only Types/Model/Interface or direct-dep top-level")
+      s!"got {errs}"
+    checks := checks + 1
+  let (_, mutProofsErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/SpecMutants/FooProofs.lean"
+    "import LeanSweProofs.Other.Proofs\n" (some depMap)
+  assertTrue "layer_reject:l2_specmutants_fooproofs_manifest"
+    (mutProofsErrs.size == 1 && containsSubstr mutProofsErrs[0]! "Layer 2 SpecMutants file forbids cross-package")
+    s!"got {mutProofsErrs}"
+  checks := checks + 1
+  let (_, modPropsErrs) ← checkSourceText "proofs/LeanSweProofs/Demo/Model/FooProofs.lean"
+    "import LeanSweProofs.Other.Properties\n" (some depMap)
+  assertTrue "layer_reject:l2_model_fooproofs_cross_props_manifest"
+    (modPropsErrs.size == 1 && containsSubstr modPropsErrs[0]! "Layer 2 Model file forbids importing")
+    s!"got {modPropsErrs}"
+  checks := checks + 1
 
   let mkOut ← IO.Process.output { cmd := "mktemp", args := #["-d", "/tmp/leanswe-checkimports-layer.XXXXXX"] }
   assertTrue "mktemp_layer_subdir" (mkOut.exitCode == 0) mkOut.stderr
@@ -1325,6 +1455,22 @@ private def runSelfTests : IO UInt32 := do
     assertTrue "abs_file_target_l2_clean"
       (absL2FileRes.checked == 1 && absL2FileRes.violations.isEmpty && absL2FileRes.errors.isEmpty)
       s!"got {absL2FileRes.violations} / {absL2FileRes.errors}"
+    checks := checks + 1
+
+    IO.FS.createDirAll (layerSubdirRepo / "scripts")
+    runCmdOk layerSubdirRepo "ln" #["-s", "/tmp/nonexistent-leanswe-manifest.json", (layerSubdirRepo / "scripts/package_manifest.json").toString]
+    let brokenManRes ← checkTargetPath (layerSubdirRepo / "proofs/LeanSweProofs/Demo/Proofs.lean")
+    assertTrue "broken_manifest_symlink_errors"
+      (brokenManRes.checked == 0 && brokenManRes.errors.any (containsSubstr · "broken symlink"))
+      s!"got {brokenManRes.errors}"
+    checks := checks + 1
+
+    removeDirForce (layerSubdirRepo / "scripts")
+    IO.FS.writeFile (layerSubdirRepo / "scripts") "not a directory\n"
+    let badParentRes ← checkTargetPath (layerSubdirRepo / "proofs/LeanSweProofs/Demo/Proofs.lean")
+    assertTrue "manifest_parent_not_dir_errors"
+      (badParentRes.checked == 0 && badParentRes.errors.any (containsSubstr · "failed to inspect"))
+      s!"got {badParentRes.errors}"
     checks := checks + 1
   finally
     removeDirForce layerSubdirRepo

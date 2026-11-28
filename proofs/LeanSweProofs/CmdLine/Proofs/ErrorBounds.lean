@@ -1,5 +1,6 @@
 import Core.Assumptions
 import LeanSwe.CmdLine.Interface
+import LeanSweProofs.EnvVars.Proofs
 import LeanSweProofs.CmdLine.Model.Obeys
 import LeanSweProofs.CmdLine.SpecTests
 import LeanSweProofs.CmdLine.Proofs.ParserCore
@@ -178,7 +179,7 @@ private theorem io_bind_allowed {α β : Type} (P : CmdLineError → Prop) (act 
   cases ha : act w with | error _ w' => rw [io_bind_err _ _ w ha]; trivial | ok a w' => rw [io_bind_eq _ _ w ha]; exact hk a w'
 private theorem envvars_getEnv_never_throws (key : String) (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.EnvVars.getEnv key w = EST.Out.ok res w' :=
-  LeanSwe.EnvVars.defaultApi_getEnv_never_throws key w
+  LeanSwe.EnvVars.Proofs.defaultApi_getEnv_never_throws key w
 
 private theorem defaultOps_getEnv_noThrow_noEof (key : String) (w : Void IO.RealWorld) :
     (∃ v w', defaultOps.getEnv key w = EST.Out.ok (Except.ok v) w') ∨

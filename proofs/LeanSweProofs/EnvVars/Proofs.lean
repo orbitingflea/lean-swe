@@ -134,6 +134,48 @@ private theorem mkApiM_homeDir_never
       · subst hs; simp [io_pure_eq]; exact hf1.symm
       · simp [io_pure_eq]
 
+private theorem mkApiM_getEnv_never_throws
+    (g : String → BaseIO (Option ByteArray))
+    (l : BaseIO (Array ByteArray))
+    (key : String) (w : Void IO.RealWorld) :
+    ∃ res w', (Internal.mkApiM (m := IO) {
+      getEnvBytes := fun k => liftM (g k)
+      listEnvironBytes := liftM l
+    }).getEnv key w = EST.Out.ok res w' := by
+  simp only [Internal.mkApiM]
+  by_cases hk : Internal.isValidKey key
+  · simp only [hk, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    rw [io_bind_baseIO]
+    cases (g key w).val with
+    | none => exact ⟨_, _, io_pure_eq _ _⟩
+    | some bs =>
+      dsimp only
+      cases String.fromUTF8? bs <;> exact ⟨_, _, io_pure_eq _ _⟩
+  · simp only [hk, Bool.not_false, ↓reduceIte]
+    exact ⟨_, _, io_pure_eq _ _⟩
+
+private theorem mkApiM_listEnv_never_throws
+    (g : String → BaseIO (Option ByteArray))
+    (l : BaseIO (Array ByteArray))
+    (w : Void IO.RealWorld) :
+    ∃ res w', (Internal.mkApiM (m := IO) {
+      getEnvBytes := fun k => liftM (g k)
+      listEnvironBytes := liftM l
+    }).listEnv w = EST.Out.ok res w' := by
+  simp only [Internal.mkApiM]
+  rw [io_bind_baseIO]
+  exact ⟨_, _, io_pure_eq _ _⟩
+
+/-- `defaultApi.getEnv` never throws an uncaught `IO.Error`. -/
+theorem defaultApi_getEnv_never_throws (key : String) (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.EnvVars.defaultApi.getEnv key w = EST.Out.ok res w' := by
+  apply mkApiM_getEnv_never_throws
+
+/-- `defaultApi.listEnv` never throws an uncaught `IO.Error`. -/
+theorem defaultApi_listEnv_never_throws (w : Void IO.RealWorld) :
+    ∃ res w', LeanSwe.EnvVars.defaultApi.listEnv w = EST.Out.ok res w' := by
+  apply mkApiM_listEnv_never_throws
+
 /-- Proof that `EnvVars.getEnv` never returns `.notFound`. -/
 theorem envvars_getEnv_never_notFound (key : String) (w : Void IO.RealWorld) :
     Core.NeverErrorKindIO EnvVarsError.kind .notFound (EnvVars.getEnv key) w := by

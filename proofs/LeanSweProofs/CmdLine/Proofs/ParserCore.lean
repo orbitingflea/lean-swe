@@ -674,6 +674,39 @@ private theorem checkCommandNodeStep_iff (node : CommandSpec) (ctx : Internal.Va
 private theorem mem_pushValidChildren {subs : List CommandSpec} {ctx : Internal.ValidCtx} {acc : List (CommandSpec × Internal.ValidCtx)} {p : CommandSpec × Internal.ValidCtx} : p ∈ Internal.pushValidChildren subs ctx acc ↔ (∃ s ∈ subs, p = (s, ctx)) ∨ p ∈ acc := by
   unfold Internal.pushValidChildren; induction subs generalizing acc with | nil => simp | cons s _ ih =>
     simp only [List.foldl_cons, ih, List.mem_cons]; exact ⟨by rintro (⟨t, ht, hpt⟩ | (rfl | ha)); exact Or.inl ⟨t, Or.inr ht, hpt⟩; exact Or.inl ⟨s, Or.inl rfl, rfl⟩; exact Or.inr ha, by rintro (⟨t, rfl | ht, hpt⟩ | ha); exact Or.inr (Or.inl hpt); exact Or.inl ⟨t, ht, hpt⟩; exact Or.inr (Or.inr ha)⟩
+private theorem validWorklistMeasure_cons (p : CommandSpec × Internal.ValidCtx) (wl : List (CommandSpec × Internal.ValidCtx)) :
+    Internal.validWorklistMeasure (p :: wl) = sizeOf p.1 + Internal.validWorklistMeasure wl := by
+  unfold Internal.validWorklistMeasure
+  have h : ∀ (xs : List (CommandSpec × Internal.ValidCtx)) (n : Nat),
+      xs.foldl (fun acc q => acc + sizeOf q.1) n =
+      n + xs.foldl (fun acc q => acc + sizeOf q.1) 0 := by
+    intro xs
+    induction xs with
+    | nil => intro n; simp
+    | cons x rest ih =>
+      intro n
+      simp only [List.foldl_cons, Nat.zero_add]
+      rw [ih (n + sizeOf x.1), ih (sizeOf x.1), Nat.add_assoc]
+  simp only [List.foldl_cons, Nat.zero_add]
+  exact h wl (sizeOf p.1)
+private theorem validWorklistMeasure_pushChildren (subs : List CommandSpec) (ctx : Internal.ValidCtx)
+    (acc : List (CommandSpec × Internal.ValidCtx)) :
+    Internal.validWorklistMeasure (Internal.pushValidChildren subs ctx acc) ≤ sizeOf subs + Internal.validWorklistMeasure acc := by
+  unfold Internal.pushValidChildren
+  induction subs generalizing acc with
+  | nil => simp
+  | cons s rest ih =>
+    simp only [List.foldl_cons]
+    have h1 := ih ((s, ctx) :: acc)
+    rw [validWorklistMeasure_cons] at h1
+    dsimp only at h1
+    have hSize : sizeOf (s :: rest) = 1 + sizeOf s + sizeOf rest := by simp
+    omega
+private theorem sizeOf_subcommands_lt_node (node : CommandSpec) :
+    sizeOf node.subcommands < sizeOf node := by
+  cases node
+  simp [CommandSpec.mk.sizeOf_spec]
+  omega
 private theorem isValidCommandNode_congr (node : CommandSpec) (ctx : Internal.ValidCtx) (b1 b2 : List OptSpec) (h1 : ValidCtxInv ctx b1) (h2 : ValidCtxInv ctx b2) : Model.isValidCommandNode node b1 ctx.effVer = Model.isValidCommandNode node b2 ctx.effVer := by
   have hs1 := checkCommandNodeStep_iff node ctx b1 h1; have hs2 := checkCommandNodeStep_iff node ctx b2 h2
   cases hChk : Internal.checkCommandNodeStep node ctx with | none => rw [hs1.2 hChk, hs2.2 hChk] | some nextCtx =>
@@ -681,7 +714,7 @@ private theorem isValidCommandNode_congr (node : CommandSpec) (ctx : Internal.Va
     have ih : ∀ s ∈ node.subcommands, Model.isValidCommandNode s (b1 ++ node.options) (node.version <|> ctx.effVer) = Model.isValidCommandNode s (b2 ++ node.options) (node.version <|> ctx.effVer) := fun s hs => by have hSub := isValidCommandNode_congr s nextCtx (b1 ++ node.options) (b2 ++ node.options) hA.1 hB.1; rwa [hA.2.1] at hSub
     exact ⟨fun h s hs => ih s hs ▸ h s hs, fun h s hs => (ih s hs).symm ▸ h s hs⟩
 termination_by sizeOf node
-decreasing_by have hmem := List.sizeOf_lt_of_mem hs; have hlt := Internal.sizeOf_subcommands_lt_node node; omega
+decreasing_by have hmem := List.sizeOf_lt_of_mem hs; have hlt := sizeOf_subcommands_lt_node node; omega
 private theorem isValidSpecWorklist_iff (wl : List (CommandSpec × Internal.ValidCtx)) (hInvAll : ∀ p ∈ wl, ∃ baseOpts, ValidCtxInv p.2 baseOpts) :
     Internal.isValidSpecWorklist wl = true ↔ ∀ p ∈ wl, ∀ baseOpts, ValidCtxInv p.2 baseOpts → Model.isValidCommandNode p.1 baseOpts p.2.effVer = true := by
   induction hM : Internal.validWorklistMeasure wl using Nat.strongRecOn generalizing wl with | _ m ih => cases wl with | nil => simp [Internal.isValidSpecWorklist] | cons hd rest =>
@@ -693,7 +726,7 @@ private theorem isValidSpecWorklist_iff (wl : List (CommandSpec × Internal.Vali
       have hInvPush : ∀ p ∈ Internal.pushValidChildren node.subcommands nextCtx rest, ∃ baseOpts, ValidCtxInv p.2 baseOpts := by
         intro p hp; rw [mem_pushValidChildren] at hp; rcases hp with ⟨_, _, rfl⟩ | hpr; exact ⟨base0 ++ node.options, hNextInv⟩; exact hInvAll p (List.mem_cons_of_mem _ hpr)
       have hLt : Internal.validWorklistMeasure (Internal.pushValidChildren node.subcommands nextCtx rest) < m := by
-        rw [← hM]; have ha := Internal.validWorklistMeasure_pushChildren node.subcommands nextCtx rest; have hb := Internal.validWorklistMeasure_cons (node, ctx) rest; have hc := Internal.sizeOf_subcommands_lt_node node; dsimp only at hb; omega
+        rw [← hM]; have ha := validWorklistMeasure_pushChildren node.subcommands nextCtx rest; have hb := validWorklistMeasure_cons (node, ctx) rest; have hc := sizeOf_subcommands_lt_node node; dsimp only at hb; omega
       dsimp only; rw [ih _ hLt _ hInvPush rfl]; constructor
       · intro hRec p hp b hCb; rcases List.mem_cons.mp hp with rfl | hpr
         · rcases (checkCommandNodeStep_iff node ctx b hCb).1 nextCtx hChk with ⟨hNb, hEb, hEqB⟩; rw [hEqB, isValidSubcommandList_iff_all]; intro s hs

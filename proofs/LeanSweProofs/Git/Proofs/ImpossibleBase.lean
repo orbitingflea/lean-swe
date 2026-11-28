@@ -1,6 +1,8 @@
 import Core.Assumptions
 import LeanSwe.EnvVars.Interface
 import LeanSwe.Process.Interface
+import LeanSweProofs.EnvVars.Proofs
+import LeanSweProofs.Process.Proofs
 import LeanSwe.Git.Types
 import LeanSweProofs.Git.Model
 import LeanSwe.Git.Impl
@@ -37,13 +39,13 @@ theorem io_bind_ok {α β : Type} (act : IO α) (k : α → IO β) (w : Void IO.
 /-- `LeanSwe.EnvVars.defaultApi.listEnv` never throws an uncaught `IO.Error`. -/
 theorem envvars_listEnv_never_throws (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.EnvVars.defaultApi.listEnv w = EST.Out.ok res w' :=
-  LeanSwe.EnvVars.defaultApi_listEnv_never_throws w
+  LeanSwe.EnvVars.Proofs.defaultApi_listEnv_never_throws w
 
 /-- `LeanSwe.Process.defaultApi.run` never throws an uncaught `IO.Error`. -/
 theorem process_run_never_throws (req : LeanSwe.Process.ExecRequest)
     (w : Void IO.RealWorld) :
     ∃ res w', LeanSwe.Process.defaultApi.run req w = EST.Out.ok res w' :=
-  LeanSwe.Process.defaultApi_run_never_throws req w
+  LeanSwe.Process.Proofs.defaultApi_run_never_throws req w
 
 /-- `Git.defaultOps.listEnv` never throws and maps all errors to `.commandFailed`. -/
 theorem defaultOps_listEnv_res (w : Void IO.RealWorld) :

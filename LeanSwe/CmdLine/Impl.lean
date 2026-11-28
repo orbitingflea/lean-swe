@@ -522,7 +522,7 @@ def checkCommandNodeStep (node : CommandSpec) (ctx : ValidCtx) : Option ValidCtx
     | _, _, _, _ => none
 
 /-- Helper identity for `validWorklistMeasure` on cons. -/
-theorem validWorklistMeasure_cons (p : CommandSpec × ValidCtx) (wl : List (CommandSpec × ValidCtx)) :
+private theorem validWorklistMeasure_cons (p : CommandSpec × ValidCtx) (wl : List (CommandSpec × ValidCtx)) :
     validWorklistMeasure (p :: wl) = sizeOf p.1 + validWorklistMeasure wl := by
   unfold validWorklistMeasure
   have h : ∀ (xs : List (CommandSpec × ValidCtx)) (n : Nat),
@@ -539,7 +539,7 @@ theorem validWorklistMeasure_cons (p : CommandSpec × ValidCtx) (wl : List (Comm
   exact h wl (sizeOf p.1)
 
 /-- Helper bound for `validWorklistMeasure` after pushing subcommands. -/
-theorem validWorklistMeasure_pushChildren (subs : List CommandSpec) (ctx : ValidCtx)
+private theorem validWorklistMeasure_pushChildren (subs : List CommandSpec) (ctx : ValidCtx)
     (acc : List (CommandSpec × ValidCtx)) :
     validWorklistMeasure (pushValidChildren subs ctx acc) ≤ sizeOf subs + validWorklistMeasure acc := by
   unfold pushValidChildren
@@ -554,7 +554,7 @@ theorem validWorklistMeasure_pushChildren (subs : List CommandSpec) (ctx : Valid
     omega
 
 /-- Helper bound showing `sizeOf node.subcommands < sizeOf node`. -/
-theorem sizeOf_subcommands_lt_node (node : CommandSpec) :
+private theorem sizeOf_subcommands_lt_node (node : CommandSpec) :
     sizeOf node.subcommands < sizeOf node := by
   cases node
   simp [CommandSpec.mk.sizeOf_spec]
