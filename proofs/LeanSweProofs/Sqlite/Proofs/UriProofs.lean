@@ -1,11 +1,11 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.UriNoWalProofs
-import LeanSweProofs.Sqlite.Raw.Proofs.UriHasWalProofs
+import LeanSweProofs.Sqlite.Proofs.UriNoWalProofs
+import LeanSweProofs.Sqlite.Proofs.UriHasWalProofs
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Proof of `test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets` for `Internal.mkRawOps`. -/
 theorem proof_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets :
@@ -28,4 +28,4 @@ theorem reach_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets :
     CanReach (test_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets Internal.mkRawOps) :=
   proof_sqliteraw_openDb_uriAuthorityNullEscapeAndWalTargets
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

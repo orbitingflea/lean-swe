@@ -1,5 +1,4 @@
 import LeanSwe.Sqlite.Interface
-import LeanSwe.Sqlite.Raw.Interface
 import LeanSweProofs.Sqlite.Model
 import Fuzz.Common.Rng
 import Fuzz.Common.Shrink
@@ -29,7 +28,7 @@ private def logSqliteErr {α : Type} (emitErrHits : Bool) (qualOp : String)
     (res : Except SqliteError α) : IO Unit := do
   if emitErrHits then
     if let .error e := res then
-      Fuzz.Common.logErrHit qualOp s!"LeanSwe.Sqlite.Raw.SqliteErrorKind.{errKindTag e.kind}" "real"
+      Fuzz.Common.logErrHit qualOp s!"LeanSwe.Sqlite.SqliteErrorKind.{errKindTag e.kind}" "real"
 
 private def requiredBuckets : Array CoverageBucket := #[
   bucket "validateConfig" "ok",
@@ -891,7 +890,7 @@ private def cleanupEpisodeDir (epDir : System.FilePath) : IO Unit := do
     catch _ => pure ()
   forceRemoveDirAll epDir
 
-private def stepResultMatches (a b : Except SqliteError Raw.StepResult) : Bool :=
+private def stepResultMatches (a b : Except SqliteError StepResult) : Bool :=
   match a, b with
   | .ok .done, .ok .done => true
   | .ok (.row r1), .ok (.row r2) => Model.sqliteRowBitEq r1 r2
@@ -911,8 +910,8 @@ private def runRawSessionLockstep
     (emitErrHits : Bool := false) : IO Unit := do
   opsCountRef.modify (· + 1)
   let resolvedPath := target.resolve epDir
-  let rOpen ← LeanSwe.Sqlite.Raw.openDb resolvedPath cfg
-  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rOpen
+  let rOpen ← LeanSwe.Sqlite.openDb resolvedPath cfg
+  logSqliteErr emitErrHits "LeanSwe.Sqlite.openDb" rOpen
   let st0 ← worldRef.get
   let (mOpen, st1) := Model.modelRawOps.openDb resolvedPath cfg st0
   worldRef.set st1
@@ -924,7 +923,7 @@ private def runRawSessionLockstep
     else
       trackerRef.modify (·.record "raw" "open.err")
   | .ok rDb, .error eModel =>
-    let _ ← LeanSwe.Sqlite.Raw.closeDb rDb
+    let _ ← LeanSwe.Sqlite.closeDb rDb
     recordMismatch mismatchRef
       s!"RAW_OPEN_OUTCOME_MISMATCH path={repr resolvedPath} cfg={repr cfg} real=.ok model={repr eModel}"
   | .error eReal, .ok mDb =>
@@ -948,8 +947,8 @@ private def runRawSessionLockstep
             let idx := slot % 2
             match rSlots.getD idx none, mSlots.getD idx none with
             | some (oldR, true), some (oldM, true) =>
-              let rOldF ← LeanSwe.Sqlite.Raw.finalize oldR
-              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rOldF
+              let rOldF ← LeanSwe.Sqlite.finalize oldR
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.finalize" rOldF
               let stC ← worldRef.get
               let (mOldF, stC') := Model.modelRawOps.finalize oldM stC
               worldRef.set stC'
@@ -966,8 +965,8 @@ private def runRawSessionLockstep
                   s!"RAW_OVERWRITE_FIN_MISMATCH real={repr rOldF} model={repr mOldF}"
             | _, _ => pure ()
             if !(← hasActiveMismatch mismatchRef) then
-              let rPrep ← LeanSwe.Sqlite.Raw.prepare realDb sql
-              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPrep
+              let rPrep ← LeanSwe.Sqlite.prepare realDb sql
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.prepare" rPrep
               let stNow ← worldRef.get
               let (mPrep, stNext) := Model.modelRawOps.prepare modelDb sql stNow
               worldRef.set stNext
@@ -983,7 +982,7 @@ private def runRawSessionLockstep
                 else
                   trackerRef.modify (·.record "raw" "prepare.err")
               | .ok rs, .error e2 =>
-                let _ ← LeanSwe.Sqlite.Raw.finalize rs
+                let _ ← LeanSwe.Sqlite.finalize rs
                 recordMismatch mismatchRef
                   s!"RAW_PREP_OUTCOME_MISMATCH sql={repr sql} real=.ok model={repr e2}"
               | .error e1, .ok ms =>
@@ -996,8 +995,8 @@ private def runRawSessionLockstep
             let (ms, _) := match mSlots.getD idx none with | some p => p | none => (forgedStmt, false)
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
-            let rB ← LeanSwe.Sqlite.Raw.bind rs ps
-            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rB
+            let rB ← LeanSwe.Sqlite.bind rs ps
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.bind" rB
             let stNow ← worldRef.get
             let (mB, stNext) := Model.modelRawOps.bind ms ps stNow
             worldRef.set stNext
@@ -1016,8 +1015,8 @@ private def runRawSessionLockstep
             let (ms, _) := match mSlots.getD idx none with | some p => p | none => (forgedStmt, false)
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
-            let rS ← LeanSwe.Sqlite.Raw.step rs
-            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rS
+            let rS ← LeanSwe.Sqlite.step rs
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.step" rS
             let stNow ← worldRef.get
             let witnessRows? ←
               match rS, rLive with
@@ -1045,8 +1044,8 @@ private def runRawSessionLockstep
             let (ms, _) := match mSlots.getD idx none with | some p => p | none => (forgedStmt, false)
             if !rLive && (rSlots.getD idx none).isSome then
               trackerRef.modify (·.record "raw" "useAfterFinalize")
-            let rF ← LeanSwe.Sqlite.Raw.finalize rs
-            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rF
+            let rF ← LeanSwe.Sqlite.finalize rs
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.finalize" rF
             let stNow ← worldRef.get
             let (mF, stNext) := Model.modelRawOps.finalize ms stNow
             worldRef.set stNext
@@ -1067,13 +1066,13 @@ private def runRawSessionLockstep
             let peerCfg : OpenConfig := { walMode := cfg.walMode, busyTimeoutMs := 0, foreignKeys := cfg.foreignKeys }
             if resolvedPath.startsWith "file:" then
               let runRealRawPeer : IO (Except SqliteError Unit) := do
-                let rOpen ← LeanSwe.Sqlite.Raw.openDb resolvedPath peerCfg
-                logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rOpen
+                let rOpen ← LeanSwe.Sqlite.openDb resolvedPath peerCfg
+                logSqliteErr emitErrHits "LeanSwe.Sqlite.openDb" rOpen
                 match rOpen with
                 | .error e => return Except.error e
                 | .ok pDb =>
-                  let rPrep ← LeanSwe.Sqlite.Raw.prepare pDb sql
-                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPrep
+                  let rPrep ← LeanSwe.Sqlite.prepare pDb sql
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.prepare" rPrep
                   let res : Except SqliteError Unit ←
                     match rPrep with
                     | .error e => pure (Except.error e)
@@ -1081,8 +1080,8 @@ private def runRawSessionLockstep
                       let bRes : Except SqliteError Unit ←
                         if ps.isEmpty then pure (Except.ok ())
                         else do
-                          let rBind ← LeanSwe.Sqlite.Raw.bind psH ps
-                          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rBind
+                          let rBind ← LeanSwe.Sqlite.bind psH ps
+                          logSqliteErr emitErrHits "LeanSwe.Sqlite.bind" rBind
                           pure rBind
                       let sRes : Except SqliteError Unit ←
                         match bRes with
@@ -1091,8 +1090,8 @@ private def runRawSessionLockstep
                           let mut stepErr? : Option SqliteError := none
                           let mut doneLoop := false
                           while !doneLoop do
-                            let rStep ← LeanSwe.Sqlite.Raw.step psH
-                            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rStep
+                            let rStep ← LeanSwe.Sqlite.step psH
+                            logSqliteErr emitErrHits "LeanSwe.Sqlite.step" rStep
                             match rStep with
                             | .error e =>
                               stepErr? := some e
@@ -1104,13 +1103,13 @@ private def runRawSessionLockstep
                           match stepErr? with
                           | some e => pure (Except.error e)
                           | none => pure (Except.ok ())
-                      let fRes ← LeanSwe.Sqlite.Raw.finalize psH
-                      logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" fRes
+                      let fRes ← LeanSwe.Sqlite.finalize psH
+                      logSqliteErr emitErrHits "LeanSwe.Sqlite.finalize" fRes
                       match sRes with
                       | .error e => pure (Except.error e)
                       | .ok () => pure fRes
-                  let cRes ← LeanSwe.Sqlite.Raw.closeDb pDb
-                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" cRes
+                  let cRes ← LeanSwe.Sqlite.closeDb pDb
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.closeDb" cRes
                   match cRes with
                   | .error e => return Except.error e
                   | .ok () => return res
@@ -1153,8 +1152,8 @@ private def runRawSessionLockstep
                 recordMismatch mismatchRef s!"RAW_PEER_OUTCOME_MISMATCH sql={repr sql} real={repr rPeer} model={repr mPeer}"
           | .rawPeerExec peerTgt peerCfg sql ps =>
             let peerPath := peerTgt.resolve epDir
-            let rPO ← LeanSwe.Sqlite.Raw.openDb peerPath peerCfg
-            logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.openDb" rPO
+            let rPO ← LeanSwe.Sqlite.openDb peerPath peerCfg
+            logSqliteErr emitErrHits "LeanSwe.Sqlite.openDb" rPO
             let stP0 ← worldRef.get
             let (mPO, stP1) := Model.modelRawOps.openDb peerPath peerCfg stP0
             worldRef.set stP1
@@ -1164,7 +1163,7 @@ private def runRawSessionLockstep
                 recordMismatch mismatchRef
                   s!"RAW_PEER_OPEN_ERR_MISMATCH path={repr peerPath} real={repr e1} model={repr e2}"
             | .ok rPDb, .error e2 =>
-              let _ ← LeanSwe.Sqlite.Raw.closeDb rPDb
+              let _ ← LeanSwe.Sqlite.closeDb rPDb
               recordMismatch mismatchRef
                 s!"RAW_PEER_OPEN_OUTCOME_MISMATCH path={repr peerPath} real=.ok model={repr e2}"
             | .error e1, .ok mPDb =>
@@ -1173,8 +1172,8 @@ private def runRawSessionLockstep
               recordMismatch mismatchRef
                 s!"RAW_PEER_OPEN_OUTCOME_MISMATCH path={repr peerPath} real={repr e1} model=.ok"
             | .ok rPDb, .ok mPDb =>
-              let rPP ← LeanSwe.Sqlite.Raw.prepare rPDb sql
-              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.prepare" rPP
+              let rPP ← LeanSwe.Sqlite.prepare rPDb sql
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.prepare" rPP
               let stP2 ← worldRef.get
               let (mPP, stP3) := Model.modelRawOps.prepare mPDb sql stP2
               worldRef.set stP3
@@ -1183,7 +1182,7 @@ private def runRawSessionLockstep
                 if !errorsMatch e1 e2 then
                   recordMismatch mismatchRef s!"RAW_PEER_PREP_ERR_MISMATCH sql={repr sql} real={repr e1} model={repr e2}"
               | .ok rPSt, .error e2 =>
-                let _ ← LeanSwe.Sqlite.Raw.finalize rPSt
+                let _ ← LeanSwe.Sqlite.finalize rPSt
                 recordMismatch mismatchRef s!"RAW_PEER_PREP_OUTCOME_MISMATCH sql={repr sql} real=.ok model={repr e2}"
               | .error e1, .ok mPSt =>
                 worldRef.set (Model.modelRawOps.finalize mPSt stP3).2
@@ -1191,8 +1190,8 @@ private def runRawSessionLockstep
               | .ok rPSt, .ok mPSt =>
                 let mut bindOk := true
                 if !ps.isEmpty then
-                  let rPB ← LeanSwe.Sqlite.Raw.bind rPSt ps
-                  logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.bind" rPB
+                  let rPB ← LeanSwe.Sqlite.bind rPSt ps
+                  logSqliteErr emitErrHits "LeanSwe.Sqlite.bind" rPB
                   let stPB0 ← worldRef.get
                   let (mPB, stPB1) := Model.modelRawOps.bind mPSt ps stPB0
                   worldRef.set stPB1
@@ -1208,8 +1207,8 @@ private def runRawSessionLockstep
                 if bindOk && !(← hasActiveMismatch mismatchRef) then
                   let mut doneP := false
                   while !doneP && !(← hasActiveMismatch mismatchRef) do
-                    let rPS ← LeanSwe.Sqlite.Raw.step rPSt
-                    logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.step" rPS
+                    let rPS ← LeanSwe.Sqlite.step rPSt
+                    logSqliteErr emitErrHits "LeanSwe.Sqlite.step" rPS
                     let stPS0 ← worldRef.get
                     let pWitnessRows? ←
                       match rPS with
@@ -1218,20 +1217,20 @@ private def runRawSessionLockstep
                           match Model.stmtInsertIpkTarget? stPS0 mPSt with
                           | none => return .ok none
                           | some (tblName, ipkCol) =>
-                            match ← LeanSwe.Sqlite.Raw.prepare rPDb s!"SELECT * FROM {tblName} ORDER BY {ipkCol} ASC" with
+                            match ← LeanSwe.Sqlite.prepare rPDb s!"SELECT * FROM {tblName} ORDER BY {ipkCol} ASC" with
                             | .error e => return .error s!"SQLITE_PEER_WITNESS_PREP_ERR tbl={tblName} err={repr e}"
                             | .ok qSt =>
                               let mut qRows : Array SqliteRow := #[]
                               let mut qErr? : Option SqliteError := none
                               let mut qDone := false
                               while !qDone do
-                                match ← LeanSwe.Sqlite.Raw.step qSt with
+                                match ← LeanSwe.Sqlite.step qSt with
                                 | .ok .done => qDone := true
                                 | .ok (.row r) => qRows := qRows.push r
                                 | .error e =>
                                   qErr? := some e
                                   qDone := true
-                              let _ ← LeanSwe.Sqlite.Raw.finalize qSt
+                              let _ ← LeanSwe.Sqlite.finalize qSt
                               match qErr? with
                               | some e => return .error s!"SQLITE_PEER_WITNESS_STEP_ERR tbl={tblName} err={repr e}"
                               | none => return .ok (some qRows.toList)
@@ -1252,8 +1251,8 @@ private def runRawSessionLockstep
                         match rPS with
                         | .ok (.row _) => pure ()
                         | _ => doneP := true
-                let rPF ← LeanSwe.Sqlite.Raw.finalize rPSt
-                logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rPF
+                let rPF ← LeanSwe.Sqlite.finalize rPSt
+                logSqliteErr emitErrHits "LeanSwe.Sqlite.finalize" rPF
                 let stPF0 ← worldRef.get
                 let (mPF, stPF1) := Model.modelRawOps.finalize mPSt stPF0
                 worldRef.set stPF1
@@ -1265,8 +1264,8 @@ private def runRawSessionLockstep
                       recordMismatch mismatchRef s!"RAW_PEER_FIN_ERR_MISMATCH real={repr e1} model={repr e2}"
                   | _, _ =>
                     recordMismatch mismatchRef s!"RAW_PEER_FIN_OUTCOME_MISMATCH real={repr rPF} model={repr mPF}"
-              let rPC ← LeanSwe.Sqlite.Raw.closeDb rPDb
-              logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rPC
+              let rPC ← LeanSwe.Sqlite.closeDb rPDb
+              logSqliteErr emitErrHits "LeanSwe.Sqlite.closeDb" rPC
               let stPC0 ← worldRef.get
               let (mPC, stPC1) := Model.modelRawOps.closeDb mPDb stPC0
               worldRef.set stPC1
@@ -1278,8 +1277,8 @@ private def runRawSessionLockstep
       if !(← hasActiveMismatch mismatchRef) then
         let hasLiveR := (← realSlotsRef.get).any fun | some (_, true) => true | _ => false
         if hasLiveR then
-          let rBusy ← LeanSwe.Sqlite.Raw.closeDb realDb
-          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rBusy
+          let rBusy ← LeanSwe.Sqlite.closeDb realDb
+          logSqliteErr emitErrHits "LeanSwe.Sqlite.closeDb" rBusy
           let stNow ← worldRef.get
           let (mBusy, stNext) := Model.modelRawOps.closeDb modelDb stNow
           worldRef.set stNext
@@ -1297,8 +1296,8 @@ private def runRawSessionLockstep
       for i in List.range rFinalSlots.size do
         match rFinalSlots.getD i none, mFinalSlots.getD i none with
         | some (rs, true), some (ms, true) =>
-          let rFin ← LeanSwe.Sqlite.Raw.finalize rs
-          logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.finalize" rFin
+          let rFin ← LeanSwe.Sqlite.finalize rs
+          logSqliteErr emitErrHits "LeanSwe.Sqlite.finalize" rFin
           let stNow ← worldRef.get
           let (mFin, stNext) := Model.modelRawOps.finalize ms stNow
           worldRef.set stNext
@@ -1311,13 +1310,13 @@ private def runRawSessionLockstep
             | _, _ =>
               recordMismatch mismatchRef s!"RAW_CLEANUP_FIN_ERR real={repr rFin} model={repr mFin}"
         | some (rs, true), none =>
-          let _ ← LeanSwe.Sqlite.Raw.finalize rs
+          let _ ← LeanSwe.Sqlite.finalize rs
         | none, some (ms, true) =>
           let stNow ← worldRef.get
           worldRef.set (Model.modelRawOps.finalize ms stNow).2
         | _, _ => pure ()
-      let rClose ← LeanSwe.Sqlite.Raw.closeDb realDb
-      logSqliteErr emitErrHits "LeanSwe.Sqlite.Raw.closeDb" rClose
+      let rClose ← LeanSwe.Sqlite.closeDb realDb
+      logSqliteErr emitErrHits "LeanSwe.Sqlite.closeDb" rClose
       let stNow ← worldRef.get
       let (mClose, stClose) := Model.modelRawOps.closeDb modelDb stNow
       worldRef.set stClose
@@ -1892,61 +1891,61 @@ private def runFinalizeRaceProbe (realDb : DbHandle) : IO Unit := do
   let bind200Params : Array SqliteValue := Array.replicate 200 (.int 7)
   for _ in List.range 20 do
     let bStmt ← unwrapOrThrow "SQLITE_THREAD_PROBE_BIND_PREP_ERR"
-      (← LeanSwe.Sqlite.Raw.prepare realDb bind200Sql)
+      (← LeanSwe.Sqlite.prepare realDb bind200Sql)
     let tBind ← IO.asTask do
-      match ← LeanSwe.Sqlite.Raw.bind bStmt bind200Params with
+      match ← LeanSwe.Sqlite.bind bStmt bind200Params with
       | .ok () => pure ()
       | .error e =>
         if e.kind != .misuse then
           throw (IO.userError s!"SQLITE_THREAD_PROBE_BIND_RACE_ERR: {repr e}")
     let tFin ← IO.asTask do
-      let _ ← LeanSwe.Sqlite.Raw.finalize bStmt
+      let _ ← LeanSwe.Sqlite.finalize bStmt
       pure ()
     match tBind.get with | .error e => throw e | .ok () => pure ()
     match tFin.get with | .error e => throw e | .ok () => pure ()
-    let _ ← LeanSwe.Sqlite.Raw.finalize bStmt
+    let _ ← LeanSwe.Sqlite.finalize bStmt
   for _ in List.range 20 do
     let sRace ← unwrapOrThrow "SQLITE_THREAD_PROBE_STEPFIN_PREP_ERR"
-      (← LeanSwe.Sqlite.Raw.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
+      (← LeanSwe.Sqlite.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
     let tStep ← IO.asTask do
-      match ← LeanSwe.Sqlite.Raw.step sRace with
+      match ← LeanSwe.Sqlite.step sRace with
       | .ok _ => pure ()
       | .error e =>
         if e.kind != .misuse then
           throw (IO.userError s!"SQLITE_THREAD_PROBE_STEP_RACE_ERR: {repr e}")
     let tFin ← IO.asTask do
-      let _ ← LeanSwe.Sqlite.Raw.finalize sRace
+      let _ ← LeanSwe.Sqlite.finalize sRace
       pure ()
     match tStep.get with | .error e => throw e | .ok () => pure ()
     match tFin.get with | .error e => throw e | .ok () => pure ()
-    let _ ← LeanSwe.Sqlite.Raw.finalize sRace
+    let _ ← LeanSwe.Sqlite.finalize sRace
 
 private def runReprepareRaceProbe (rootDir : System.FilePath) : IO Unit := do
   let repPath := (rootDir / "reprepare_probe.sqlite").toString
-  let repDb1 ← unwrapOrThrow "SQLITE_REPREP_OPEN1" (← LeanSwe.Sqlite.Raw.openDb repPath { walMode := true })
-  let repDb2 ← unwrapOrThrow "SQLITE_REPREP_OPEN2" (← LeanSwe.Sqlite.Raw.openDb repPath { walMode := true })
+  let repDb1 ← unwrapOrThrow "SQLITE_REPREP_OPEN1" (← LeanSwe.Sqlite.openDb repPath { walMode := true })
+  let repDb2 ← unwrapOrThrow "SQLITE_REPREP_OPEN2" (← LeanSwe.Sqlite.openDb repPath { walMode := true })
   try
     let _ ← unwrapOrThrow "SQLITE_REPREP_CREATE"
       (← LeanSwe.Sqlite.exec repDb1 "CREATE TABLE IF NOT EXISTS rep(id INTEGER PRIMARY KEY, x INT)" #[])
     let _ ← unwrapOrThrow "SQLITE_REPREP_INS"
       (← LeanSwe.Sqlite.exec repDb1 "INSERT INTO rep VALUES (1, 10)" #[])
     let repStmt ← unwrapOrThrow "SQLITE_REPREP_PREP"
-      (← LeanSwe.Sqlite.Raw.prepare repDb1 "SELECT id, x FROM rep WHERE id = ?")
+      (← LeanSwe.Sqlite.prepare repDb1 "SELECT id, x FROM rep WHERE id = ?")
     let tDdl ← IO.asTask do
       for i in List.range 20 do
         let _ ← unwrapOrThrow "SQLITE_REPREP_DDL"
           (← LeanSwe.Sqlite.exec repDb2 s!"CREATE TABLE IF NOT EXISTS rep_d{i}(z INT)" #[])
     for _ in List.range 30 do
-      let _ ← unwrapOrThrow "SQLITE_REPREP_BIND" (← LeanSwe.Sqlite.Raw.bind repStmt #[.int 1])
-      let sRes ← unwrapOrThrow "SQLITE_REPREP_STEP" (← LeanSwe.Sqlite.Raw.step repStmt)
+      let _ ← unwrapOrThrow "SQLITE_REPREP_BIND" (← LeanSwe.Sqlite.bind repStmt #[.int 1])
+      let sRes ← unwrapOrThrow "SQLITE_REPREP_STEP" (← LeanSwe.Sqlite.step repStmt)
       if !Model.sqliteRowBitEq (match sRes with | .row r => r | .done => #[]) #[.int 1, .int 10] then
         throw (IO.userError s!"SQLITE_REPREP_STEP_ROW: {repr sRes}")
     let ddlRes := tDdl.get
-    let _ ← unwrapOrThrow "SQLITE_REPREP_FIN" (← LeanSwe.Sqlite.Raw.finalize repStmt)
+    let _ ← unwrapOrThrow "SQLITE_REPREP_FIN" (← LeanSwe.Sqlite.finalize repStmt)
     if let .error e := ddlRes then throw e
   finally
-    let c2 ← LeanSwe.Sqlite.Raw.closeDb repDb2
-    let c1 ← LeanSwe.Sqlite.Raw.closeDb repDb1
+    let c2 ← LeanSwe.Sqlite.closeDb repDb2
+    let c1 ← LeanSwe.Sqlite.closeDb repDb1
     removeFileQuiet repPath
     let _ ← unwrapOrThrow "SQLITE_REPREP_CLOSE2" c2
     let _ ← unwrapOrThrow "SQLITE_REPREP_CLOSE1" c1
@@ -1986,7 +1985,7 @@ private def runWithDbBusyCloseProbe (rootDir : System.FilePath) : IO Unit := do
       let _ ← unwrapOrThrow "SQLITE_WITHDB_BUSY_CREATE"
         (← LeanSwe.Sqlite.exec db "CREATE TABLE wl(id INTEGER PRIMARY KEY)" #[])
       let s ← unwrapOrThrow "SQLITE_WITHDB_BUSY_PREP"
-        (← LeanSwe.Sqlite.Raw.prepare db "SELECT id FROM wl")
+        (← LeanSwe.Sqlite.prepare db "SELECT id FROM wl")
       heldRef.set (some (db, s))
       return (.ok () : Except SqliteError Unit)
     logSqliteErr true "LeanSwe.Sqlite.withDb" resBusy
@@ -1997,12 +1996,12 @@ private def runWithDbBusyCloseProbe (rootDir : System.FilePath) : IO Unit := do
     | .ok () =>
       throw (IO.userError "SQLITE_WITHDB_BUSY_ERR_PROP_MISSING")
     if let some (db, s) ← heldRef.get then
-      let _ ← unwrapOrThrow "SQLITE_WITHDB_BUSY_FIN" (← LeanSwe.Sqlite.Raw.finalize s)
-      let _ ← unwrapOrThrow "SQLITE_WITHDB_BUSY_CLOSE" (← LeanSwe.Sqlite.Raw.closeDb db)
+      let _ ← unwrapOrThrow "SQLITE_WITHDB_BUSY_FIN" (← LeanSwe.Sqlite.finalize s)
+      let _ ← unwrapOrThrow "SQLITE_WITHDB_BUSY_CLOSE" (← LeanSwe.Sqlite.closeDb db)
     heldRef.set none
     let resPrimary ← LeanSwe.Sqlite.withDb waitPath {} fun db => do
       let s ← unwrapOrThrow "SQLITE_WITHDB_PRIMARY_PREP"
-        (← LeanSwe.Sqlite.Raw.prepare db "SELECT id FROM wl")
+        (← LeanSwe.Sqlite.prepare db "SELECT id FROM wl")
       heldRef.set (some (db, s))
       return (Except.error { kind := .invalidInput, message := "caller abort" } : Except SqliteError Unit)
     logSqliteErr true "LeanSwe.Sqlite.withDb" resPrimary
@@ -2013,25 +2012,25 @@ private def runWithDbBusyCloseProbe (rootDir : System.FilePath) : IO Unit := do
     | .ok () =>
       throw (IO.userError "SQLITE_WITHDB_PRIMARY_ERR_PROP_MISSING")
     if let some (db, s) ← heldRef.get then
-      let _ ← unwrapOrThrow "SQLITE_WITHDB_PRIMARY_FIN" (← LeanSwe.Sqlite.Raw.finalize s)
-      let _ ← unwrapOrThrow "SQLITE_WITHDB_PRIMARY_CLOSE" (← LeanSwe.Sqlite.Raw.closeDb db)
+      let _ ← unwrapOrThrow "SQLITE_WITHDB_PRIMARY_FIN" (← LeanSwe.Sqlite.finalize s)
+      let _ ← unwrapOrThrow "SQLITE_WITHDB_PRIMARY_CLOSE" (← LeanSwe.Sqlite.closeDb db)
   finally
     removeFileQuiet waitPath
 
 private def runThreadedStepSafetyProbe (rootDir : System.FilePath) : IO Unit := do
   let realDb ← unwrapOrThrow "SQLITE_THREAD_PROBE_OPEN_ERR"
-    (← LeanSwe.Sqlite.Raw.openDb ":memory:" {})
+    (← LeanSwe.Sqlite.openDb ":memory:" {})
   try
     for sql in #[
       "CREATE TABLE th(id INTEGER PRIMARY KEY, txt TEXT, bin BLOB)",
       "INSERT INTO th VALUES (1, 'alpha', X'010203'), (2, 'beta', X''), (3, NULL, X'AA')"
     ] do
-      let s ← unwrapOrThrow "SQLITE_THREAD_PROBE_STEP_PREP_ERR" (← LeanSwe.Sqlite.Raw.prepare realDb sql)
-      let sRes ← LeanSwe.Sqlite.Raw.step s
-      let _ ← LeanSwe.Sqlite.Raw.finalize s
+      let s ← unwrapOrThrow "SQLITE_THREAD_PROBE_STEP_PREP_ERR" (← LeanSwe.Sqlite.prepare realDb sql)
+      let sRes ← LeanSwe.Sqlite.step s
+      let _ ← LeanSwe.Sqlite.finalize s
       let _ ← unwrapOrThrow "SQLITE_THREAD_PROBE_STEP_ERR" sRes
     let stmt ← unwrapOrThrow "SQLITE_THREAD_PROBE_QPREP_ERR"
-      (← LeanSwe.Sqlite.Raw.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
+      (← LeanSwe.Sqlite.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
     let validRows : List SqliteRow :=
       [ #[.int 1, .text "alpha", .bytes (ByteArray.mk #[1, 2, 3])]
       , #[.int 2, .text "beta", .bytes ByteArray.empty]
@@ -2040,7 +2039,7 @@ private def runThreadedStepSafetyProbe (rootDir : System.FilePath) : IO Unit := 
     for _ in List.range 4 do
       let t ← IO.asTask do
         for _ in List.range 50 do
-          match ← LeanSwe.Sqlite.Raw.step stmt with
+          match ← LeanSwe.Sqlite.step stmt with
           | .error e => throw (IO.userError s!"SQLITE_THREAD_PROBE_RACESTEP: {repr e}")
           | .ok .done => pure ()
           | .ok (.row row) =>
@@ -2051,25 +2050,25 @@ private def runThreadedStepSafetyProbe (rootDir : System.FilePath) : IO Unit := 
     for t in tasks do
       if let .error e := t.get then
         if taskErr?.isNone then taskErr? := some e
-    let _ ← LeanSwe.Sqlite.Raw.finalize stmt
+    let _ ← LeanSwe.Sqlite.finalize stmt
     if let some e := taskErr? then throw e
     let mut multiTasks : Array (Task (Except IO.Error Unit)) := #[]
     for _ in List.range 4 do
       let t ← IO.asTask do
         for _ in List.range 20 do
           let ms ← unwrapOrThrow "SQLITE_THREAD_PROBE_MULTI_PREP"
-            (← LeanSwe.Sqlite.Raw.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
+            (← LeanSwe.Sqlite.prepare realDb "SELECT id, txt, bin FROM th ORDER BY id ASC")
           try
             let mut finished := false
             while !finished do
-              match ← LeanSwe.Sqlite.Raw.step ms with
+              match ← LeanSwe.Sqlite.step ms with
               | .error e => throw (IO.userError s!"SQLITE_THREAD_PROBE_MULTISTMT_STEP: {repr e}")
               | .ok .done => finished := true
               | .ok (.row row) =>
                 if !validRows.contains row then
                   throw (IO.userError s!"SQLITE_THREAD_PROBE_MULTISTMT_TORN row={repr row}")
           finally
-            let _ ← LeanSwe.Sqlite.Raw.finalize ms
+            let _ ← LeanSwe.Sqlite.finalize ms
       multiTasks := multiTasks.push t
     for t in multiTasks do
       if let .error e := t.get then
@@ -2077,12 +2076,12 @@ private def runThreadedStepSafetyProbe (rootDir : System.FilePath) : IO Unit := 
     if let some e := taskErr? then throw e
     runFinalizeRaceProbe realDb
   finally
-    let _ ← LeanSwe.Sqlite.Raw.closeDb realDb
+    let _ ← LeanSwe.Sqlite.closeDb realDb
   runReprepareRaceProbe rootDir
   runBusyLockGrowthProbe rootDir
   runWithDbBusyCloseProbe rootDir
-  let dbs ← LeanSwe.Sqlite.Raw.activeDbCount
-  let stmts ← LeanSwe.Sqlite.Raw.activeStmtCount
+  let dbs ← LeanSwe.Sqlite.activeDbCount
+  let stmts ← LeanSwe.Sqlite.activeStmtCount
   if dbs != 0 || stmts != 0 then
     throw (IO.userError s!"SQLITE_THREAD_PROBE_LEAK dbs={dbs} stmts={stmts}")
 
@@ -2091,19 +2090,19 @@ private def runCorruptBeginImmProbe (rootDir : System.FilePath) : IO Unit := do
   IO.FS.writeBinFile corruptPath (ByteArray.mk (Array.replicate 128 0xAA))
   let stC0 : Model.SqliteWorldState := { existingDirs := ["/", rootDir.toString], files := [(corruptPath, .corruptFile)] }
   let rCDb ← unwrapOrThrow "SQLITE_RAW_CORRUPT_OPEN_R"
-    (← LeanSwe.Sqlite.Raw.openDb corruptPath { walMode := false })
+    (← LeanSwe.Sqlite.openDb corruptPath { walMode := false })
   let (mCDbRes, stC1) := Model.modelRawOps.openDb corruptPath { walMode := false } stC0
   let mCDb ← unwrapOrThrow "SQLITE_RAW_CORRUPT_OPEN_M" mCDbRes
   try
     let rCSt ← unwrapOrThrow "SQLITE_RAW_CORRUPT_PREP_R"
-      (← LeanSwe.Sqlite.Raw.prepare rCDb "BEGIN IMMEDIATE")
+      (← LeanSwe.Sqlite.prepare rCDb "BEGIN IMMEDIATE")
     let (mCStRes, stC2) := Model.modelRawOps.prepare mCDb "BEGIN IMMEDIATE" stC1
     let mCSt ← unwrapOrThrow "SQLITE_RAW_CORRUPT_PREP_M" mCStRes
-    let rCS ← LeanSwe.Sqlite.Raw.step rCSt
-    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rCS
+    let rCS ← LeanSwe.Sqlite.step rCSt
+    logSqliteErr true "LeanSwe.Sqlite.step" rCS
     let (mCS, stC3) := Model.modelRawOps.step mCSt stC2
-    let rCFin ← LeanSwe.Sqlite.Raw.finalize rCSt
-    logSqliteErr true "LeanSwe.Sqlite.Raw.finalize" rCFin
+    let rCFin ← LeanSwe.Sqlite.finalize rCSt
+    logSqliteErr true "LeanSwe.Sqlite.finalize" rCFin
     let (mCFin, _) := Model.modelRawOps.finalize mCSt stC3
     let finMatch := match rCFin, mCFin with
       | .ok (), .ok () => true
@@ -2112,7 +2111,7 @@ private def runCorruptBeginImmProbe (rootDir : System.FilePath) : IO Unit := do
     if !stepResultMatches rCS mCS || !finMatch then
       throw (IO.userError s!"SQLITE_RAW_CORRUPT_BEGIN_IMM_MISMATCH real={repr rCS} model={repr mCS} rFin={repr rCFin} mFin={repr mCFin}")
   finally
-    let cRes ← LeanSwe.Sqlite.Raw.closeDb rCDb
+    let cRes ← LeanSwe.Sqlite.closeDb rCDb
     removeFileQuiet corruptPath
     let _ ← unwrapOrThrow "SQLITE_RAW_CORRUPT_CLOSE_R" cRes
 
@@ -2120,7 +2119,7 @@ private def runMidscanLockProbe (rootDir : System.FilePath) : IO Unit := do
   let scanPath := (rootDir / "raw_midscan_probe.sqlite").toString
   let stM0 : Model.SqliteWorldState := { existingDirs := ["/", rootDir.toString] }
   let rMDb1 ← unwrapOrThrow "SQLITE_RAW_SCAN_OPEN1"
-    (← LeanSwe.Sqlite.Raw.openDb scanPath { walMode := false, busyTimeoutMs := 0 })
+    (← LeanSwe.Sqlite.openDb scanPath { walMode := false, busyTimeoutMs := 0 })
   let (mMDb1Res, stM1) := Model.modelRawOps.openDb scanPath { walMode := false, busyTimeoutMs := 0 } stM0
   let mMDb1 ← unwrapOrThrow "SQLITE_RAW_SCAN_MOPEN1" mMDb1Res
   try
@@ -2133,10 +2132,10 @@ private def runMidscanLockProbe (rootDir : System.FilePath) : IO Unit := do
     let (mIRes, stM3) := (Model.modelApi.exec mMDb1 "INSERT INTO sc VALUES (1), (2)" #[]).run stM2
     let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_INS_M" mIRes
     let rMSt ← unwrapOrThrow "SQLITE_RAW_SCAN_PREP_R"
-      (← LeanSwe.Sqlite.Raw.prepare rMDb1 "SELECT id FROM sc ORDER BY id ASC")
+      (← LeanSwe.Sqlite.prepare rMDb1 "SELECT id FROM sc ORDER BY id ASC")
     let (mMStRes, stM4) := Model.modelRawOps.prepare mMDb1 "SELECT id FROM sc ORDER BY id ASC" stM3
     let mMSt ← unwrapOrThrow "SQLITE_RAW_SCAN_PREP_M" mMStRes
-    let rMS1 ← LeanSwe.Sqlite.Raw.step rMSt
+    let rMS1 ← LeanSwe.Sqlite.step rMSt
     let (mMS1, stM5) := Model.modelRawOps.step mMSt stM4
     let rW2 ← LeanSwe.Sqlite.withDb scanPath { walMode := false, busyTimeoutMs := 0 } fun d2 => do
       let rIns ← LeanSwe.Sqlite.exec d2 "INSERT INTO sc VALUES (3)" #[]
@@ -2145,20 +2144,20 @@ private def runMidscanLockProbe (rootDir : System.FilePath) : IO Unit := do
     logSqliteErr true "LeanSwe.Sqlite.withDb" rW2
     let (mW2, stM6) := (Model.modelApi.withDb scanPath { walMode := false, busyTimeoutMs := 0 } fun md2 =>
       Model.modelApi.exec md2 "INSERT INTO sc VALUES (3)" #[]).run stM5
-    let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_FIN_R" (← LeanSwe.Sqlite.Raw.finalize rMSt)
+    let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_FIN_R" (← LeanSwe.Sqlite.finalize rMSt)
     let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_FIN_M" (Model.modelRawOps.finalize mMSt stM6).1
     let w2Match := match rW2, mW2 with | .error e1, .error e2 => errorsMatch e1 e2 | _, _ => false
     if !stepResultMatches rMS1 mMS1 || !w2Match then
       throw (IO.userError s!"SQLITE_RAW_MIDSCAN_MISMATCH rMS1={repr rMS1} mMS1={repr mMS1} rW2={repr rW2} mW2={repr mW2}")
   finally
-    let cRes ← LeanSwe.Sqlite.Raw.closeDb rMDb1
+    let cRes ← LeanSwe.Sqlite.closeDb rMDb1
     removeFileQuiet scanPath
     let _ ← unwrapOrThrow "SQLITE_RAW_SCAN_CLOSE_R" cRes
 
 private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
   runThreadedStepSafetyProbe rootDir
   let realDb ← unwrapOrThrow "SQLITE_RAW_PROBE_OPEN_ERR"
-    (← LeanSwe.Sqlite.Raw.openDb ":memory:" {})
+    (← LeanSwe.Sqlite.openDb ":memory:" {})
   let mut st : Model.SqliteWorldState := {}
   let (mOpen, st1) := Model.modelRawOps.openDb ":memory:" {} st
   st := st1
@@ -2166,7 +2165,7 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
     match mOpen with
     | .ok d => pure d
     | .error e =>
-      let _ ← LeanSwe.Sqlite.Raw.closeDb realDb
+      let _ ← LeanSwe.Sqlite.closeDb realDb
       throw (IO.userError s!"SQLITE_RAW_PROBE_MODEL_OPEN_ERR: {repr e}")
   let probeSqls : Array String :=
     #[ "SELECT  \x0b 1"
@@ -2193,21 +2192,21 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
      , ";" ]
   try
     for sql in probeSqls do
-      let resReal ← LeanSwe.Sqlite.Raw.prepare realDb sql
-      logSqliteErr true "LeanSwe.Sqlite.Raw.prepare" resReal
+      let resReal ← LeanSwe.Sqlite.prepare realDb sql
+      logSqliteErr true "LeanSwe.Sqlite.prepare" resReal
       let (resModel, stNext) := Model.modelRawOps.prepare modelDb sql st
       st := stNext
       match resReal, resModel with
       | .ok rStmt, .ok mStmt =>
-        let rPS ← LeanSwe.Sqlite.Raw.step rStmt
+        let rPS ← LeanSwe.Sqlite.step rStmt
         let (mPS, stPS) := Model.modelRawOps.step mStmt st
         st := stPS
         if !stepResultMatches rPS mPS then
-          let _ ← LeanSwe.Sqlite.Raw.finalize rStmt
+          let _ ← LeanSwe.Sqlite.finalize rStmt
           let (_, stFin) := Model.modelRawOps.finalize mStmt st
           st := stFin
           throw (IO.userError s!"SQLITE_RAW_PROBE_STEP_MISMATCH sql={repr sql} real={repr rPS} model={repr mPS}")
-        let rFin ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN_R" (← LeanSwe.Sqlite.Raw.finalize rStmt)
+        let rFin ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN_R" (← LeanSwe.Sqlite.finalize rStmt)
         let (mFinRes, stFin) := Model.modelRawOps.finalize mStmt st
         let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN_M" mFinRes
         let _ := rFin
@@ -2217,7 +2216,7 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
           throw (IO.userError
             s!"SQLITE_RAW_PREPARE_MISMATCH sql={repr sql} real={repr eReal} model={repr eModel}")
       | .ok rStmt, .error eModel =>
-        let _ ← LeanSwe.Sqlite.Raw.finalize rStmt
+        let _ ← LeanSwe.Sqlite.finalize rStmt
         throw (IO.userError
           s!"SQLITE_RAW_PREPARE_OUTCOME_MISMATCH sql={repr sql} real=.ok model={repr eModel}")
       | .error eReal, .ok mStmt =>
@@ -2225,27 +2224,27 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
         st := stFin
         throw (IO.userError
           s!"SQLITE_RAW_PREPARE_OUTCOME_MISMATCH sql={repr sql} real={repr eReal} model=.ok")
-    let rP ← LeanSwe.Sqlite.Raw.prepare realDb "SELECT ?"
+    let rP ← LeanSwe.Sqlite.prepare realDb "SELECT ?"
     let (mP, stP) := Model.modelRawOps.prepare modelDb "SELECT ?" st
     st := stP
     match rP, mP with
     | .ok rs, .ok ms =>
-      let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_BIND_R" (← LeanSwe.Sqlite.Raw.bind rs #[.int 7])
+      let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_BIND_R" (← LeanSwe.Sqlite.bind rs #[.int 7])
       let (mb1, st1b) := Model.modelRawOps.bind ms #[.int 7] st
       let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_BIND_M" mb1
-      let sr1 ← LeanSwe.Sqlite.Raw.step rs
+      let sr1 ← LeanSwe.Sqlite.step rs
       let (sm1, st2) := Model.modelRawOps.step ms st1b
-      let sr2 ← LeanSwe.Sqlite.Raw.step rs
+      let sr2 ← LeanSwe.Sqlite.step rs
       let (sm2, st3) := Model.modelRawOps.step ms st2
-      let sr3 ← LeanSwe.Sqlite.Raw.step rs
+      let sr3 ← LeanSwe.Sqlite.step rs
       let (sm3, st4) := Model.modelRawOps.step ms st3
-      let rbErr ← LeanSwe.Sqlite.Raw.bind rs #[]
-      logSqliteErr true "LeanSwe.Sqlite.Raw.bind" rbErr
+      let rbErr ← LeanSwe.Sqlite.bind rs #[]
+      logSqliteErr true "LeanSwe.Sqlite.bind" rbErr
       let (mbErr, st5) := Model.modelRawOps.bind ms #[] st4
-      let sr4 ← LeanSwe.Sqlite.Raw.step rs
+      let sr4 ← LeanSwe.Sqlite.step rs
       let (sm4, st6) := Model.modelRawOps.step ms st5
       st := st6
-      let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN2_R" (← LeanSwe.Sqlite.Raw.finalize rs)
+      let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN2_R" (← LeanSwe.Sqlite.finalize rs)
       let (mf2, stFin2) := Model.modelRawOps.finalize ms st
       let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_FIN2_M" mf2
       st := stFin2
@@ -2268,32 +2267,32 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
     let (mIn, stIn) := (Model.modelApi.exec modelDb "INSERT INTO u_sticky VALUES (1)" #[]).run stCr
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_IM" mIn
     let rStk ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_PREP_R"
-      (← LeanSwe.Sqlite.Raw.prepare realDb "INSERT INTO u_sticky VALUES (?)")
+      (← LeanSwe.Sqlite.prepare realDb "INSERT INTO u_sticky VALUES (?)")
     let (mStkRes, stStk) := Model.modelRawOps.prepare modelDb "INSERT INTO u_sticky VALUES (?)" stIn
     let mStk ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_PREP_M" mStkRes
     st := stStk
-    let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_BR" (← LeanSwe.Sqlite.Raw.bind rStk #[.int 1])
+    let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_BR" (← LeanSwe.Sqlite.bind rStk #[.int 1])
     let (mB1, stB1) := Model.modelRawOps.bind mStk #[.int 1] st
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_BM" mB1
-    let rS1 ← LeanSwe.Sqlite.Raw.step rStk
-    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS1
+    let rS1 ← LeanSwe.Sqlite.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.step" rS1
     let (mS1, stStk1) := Model.modelRawOps.step mStk stB1
-    let rB2 ← LeanSwe.Sqlite.Raw.bind rStk #[.int 2]
-    logSqliteErr true "LeanSwe.Sqlite.Raw.bind" rB2
+    let rB2 ← LeanSwe.Sqlite.bind rStk #[.int 2]
+    logSqliteErr true "LeanSwe.Sqlite.bind" rB2
     let (mB2, stStk2) := Model.modelRawOps.bind mStk #[.int 2] stStk1
-    let rS2 ← LeanSwe.Sqlite.Raw.step rStk
-    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS2
+    let rS2 ← LeanSwe.Sqlite.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.step" rS2
     let (mS2, stStk3) := Model.modelRawOps.step mStk stStk2
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_DR"
       (← LeanSwe.Sqlite.exec realDb "DELETE FROM u_sticky" #[])
     let (mDel, stStk4) := (Model.modelApi.exec modelDb "DELETE FROM u_sticky" #[]).run stStk3
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_DM" mDel
-    let rS3 ← LeanSwe.Sqlite.Raw.step rStk
-    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rS3
+    let rS3 ← LeanSwe.Sqlite.step rStk
+    logSqliteErr true "LeanSwe.Sqlite.step" rS3
     let (mS3, stStk5) := Model.modelRawOps.step mStk stStk4
     let rRows ← LeanSwe.Sqlite.query realDb "SELECT x FROM u_sticky ORDER BY x ASC" #[]
     let (mRows, stStk6) := (Model.modelApi.query modelDb "SELECT x FROM u_sticky ORDER BY x ASC" #[]).run stStk5
-    let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_FR" (← LeanSwe.Sqlite.Raw.finalize rStk)
+    let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_FR" (← LeanSwe.Sqlite.finalize rStk)
     let (mFinS, stFinS) := Model.modelRawOps.finalize mStk stStk6
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_STICKY_FM" mFinS
     st := stFinS
@@ -2306,10 +2305,10 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
         !bindMatch || !rowsMatch then
       throw (IO.userError s!"SQLITE_RAW_STICKY_BIND_MISMATCH rS1={repr rS1} mS1={repr mS1} rS2={repr rS2} mS2={repr mS2} rS3={repr rS3} mS3={repr mS3} rRows={repr rRows} mRows={repr mRows}")
     let rBadUtf8 ← unwrapOrThrow "SQLITE_RAW_BAD_UTF8_PREP"
-      (← LeanSwe.Sqlite.Raw.prepare realDb "SELECT CAST(X'FF' AS TEXT)")
-    let rBadStep ← LeanSwe.Sqlite.Raw.step rBadUtf8
-    logSqliteErr true "LeanSwe.Sqlite.Raw.step" rBadStep
-    let _ ← unwrapOrThrow "SQLITE_RAW_BAD_UTF8_FIN" (← LeanSwe.Sqlite.Raw.finalize rBadUtf8)
+      (← LeanSwe.Sqlite.prepare realDb "SELECT CAST(X'FF' AS TEXT)")
+    let rBadStep ← LeanSwe.Sqlite.step rBadUtf8
+    logSqliteErr true "LeanSwe.Sqlite.step" rBadStep
+    let _ ← unwrapOrThrow "SQLITE_RAW_BAD_UTF8_FIN" (← LeanSwe.Sqlite.finalize rBadUtf8)
     match rBadStep with
     | .error e =>
       if e.kind != .ioError || e.sqliteCode.isSome || e.message.isEmpty then
@@ -2317,36 +2316,36 @@ private def runRawApiProbe (rootDir : System.FilePath) : IO Unit := do
     | .ok out =>
       throw (IO.userError s!"SQLITE_RAW_BAD_UTF8_EXPECTED_ERR: {repr out}")
   finally
-    let cRes ← LeanSwe.Sqlite.Raw.closeDb realDb
+    let cRes ← LeanSwe.Sqlite.closeDb realDb
     let _ ← unwrapOrThrow "SQLITE_RAW_PROBE_CLOSE" cRes
   runCorruptBeginImmProbe rootDir
   runMidscanLockProbe rootDir
-  let dbs ← LeanSwe.Sqlite.Raw.activeDbCount
-  let stmts ← LeanSwe.Sqlite.Raw.activeStmtCount
+  let dbs ← LeanSwe.Sqlite.activeDbCount
+  let stmts ← LeanSwe.Sqlite.activeStmtCount
   if dbs != 0 || stmts != 0 then
     throw (IO.userError s!"SQLITE_RAW_PROBE_LEAK dbs={dbs} stmts={stmts}")
 
 private inductive MockFaultStep where
-  | openV2 (err : Raw.SqliteRawError)
-  | close (err : Raw.SqliteRawError)
-  | prepareV2 (err : Raw.SqliteRawError)
-  | bindAt1 (err : Raw.SqliteRawError)
-  | step (err : Raw.SqliteRawError)
-  | finalizeSticky (err : Raw.SqliteRawError)
+  | openV2 (err : SqliteRawError)
+  | close (err : SqliteRawError)
+  | prepareV2 (err : SqliteRawError)
+  | bindAt1 (err : SqliteRawError)
+  | step (err : SqliteRawError)
+  | finalizeSticky (err : SqliteRawError)
 
 private structure MockRawCState where
-  table : Raw.RawHandleTable := {}
+  table : RawHandleTable UInt64 UInt64 := {}
   expectedBindParams : UInt32 := 0
   fault : MockFaultStep
 
-private def mockFaultCOps : Raw.CSqliteOpsM (StateM MockRawCState) :=
+private def mockFaultCOps : CSqliteOpsM (StateM MockRawCState) UInt64 UInt64 :=
   { modifyTable := fun f s =>
       let (a, t') := f s.table
       (a, { s with table := t' })
     openV2 := fun _ _ s =>
       match s.fault with
       | .openV2 err => (.error err, s)
-      | _ => (.ok (.mock 100), s)
+      | _ => (.ok 100, s)
     close := fun _ s =>
       match s.fault with
       | .close err => (.error err, s)
@@ -2396,18 +2395,19 @@ private def mockFaultCOps : Raw.CSqliteOpsM (StateM MockRawCState) :=
     columnBlob := fun _ _ s => (.ok ByteArray.empty, s) }
 
 private def mockStateWithOpenDb (fault : MockFaultStep) : MockRawCState :=
-  { table := { nextDbId := 2, nextStmtId := 1, dbs := [(1, .mock 100)], stmts := [] }
+  { table := { nextDbId := 2, nextStmtId := 1, dbs := [(1, 100)], stmts := [] }
     fault := fault }
 
 private def mockStateWithOpenStmt (expectedParams : UInt32) (fault : MockFaultStep) : MockRawCState :=
-  let sh : Raw.StmtHandle := { id := 1, dbId := 1 }
-  { table := { nextDbId := 2, nextStmtId := 2, dbs := [(1, .mock 100)], stmts := [(sh, .mock 200)] }
+  let sh : StmtHandle := { id := 1, dbId := 1 }
+  { table := { nextDbId := 2, nextStmtId := 2, dbs := [(1, 100)], stmts := [(sh, 200)] }
     expectedBindParams := expectedParams
     fault := fault }
 
 private def runMockedRawErrorProbes : IO Unit := do
-  let ops := Raw.Internal.mkRawOps mockFaultCOps
-  let rawErrs : Array (SqliteErrorKind × Raw.SqliteRawError) := #[
+  let ops := Internal.mkRawOps mockFaultCOps
+  let api := Internal.mkApiM ops
+  let rawErrs : Array (SqliteErrorKind × SqliteRawError) := #[
     (.notFound, .cantOpen (some "mock.db") 14 "mock notFound"),
     (.busy, .busy 5 "mock busy"),
     (.constraint, .constraint 19 "mock constraint"),
@@ -2420,11 +2420,11 @@ private def runMockedRawErrorProbes : IO Unit := do
     | .error e =>
       if e.kind != expected || e.message.isEmpty then
         throw (IO.userError s!"SQLITE_MOCK_PROBE_MISMATCH: {opName} expected {repr expected}, got {repr e}")
-      Fuzz.Common.logErrHit s!"LeanSwe.Sqlite.Raw.{opName}"
-        s!"LeanSwe.Sqlite.Raw.SqliteErrorKind.{errKindTag e.kind}" "mocked"
+      Fuzz.Common.logErrHit s!"LeanSwe.Sqlite.{opName}"
+        s!"LeanSwe.Sqlite.SqliteErrorKind.{errKindTag e.kind}" "mocked"
     | .ok _ =>
       throw (IO.userError s!"SQLITE_MOCK_PROBE_UNEXPECTED_OK: {opName} expected {repr expected}")
-  let stmtHandle : Raw.StmtHandle := { id := 1, dbId := 1 }
+  let stmtHandle : StmtHandle := { id := 1, dbId := 1 }
   for (expected, rawErr) in rawErrs do
     check "openDb" expected ((ops.openDb "app.db" {}).run { fault := .openV2 rawErr }).1
     check "closeDb" expected ((ops.closeDb { id := 1 }).run (mockStateWithOpenDb (.close rawErr))).1
@@ -2432,6 +2432,11 @@ private def runMockedRawErrorProbes : IO Unit := do
     check "bind" expected ((ops.bind stmtHandle #[.int 1]).run (mockStateWithOpenStmt 1 (.bindAt1 rawErr))).1
     check "step" expected ((ops.step stmtHandle).run (mockStateWithOpenStmt 0 (.step rawErr))).1
     check "finalize" expected ((ops.finalize stmtHandle).run (mockStateWithOpenStmt 0 (.finalizeSticky rawErr))).1
+    check "withDb" expected ((api.withDb "app.db" {} (fun _ => pure (.ok ()))).run { fault := .openV2 rawErr }).1
+    check "withTransaction" expected ((api.withTransaction { id := 1 } (fun _ => pure (.ok ()))).run (mockStateWithOpenDb (.prepareV2 rawErr))).1
+    check "exec" expected ((api.exec { id := 1 } "SELECT 1" #[]).run (mockStateWithOpenDb (.prepareV2 rawErr))).1
+    check "query" expected ((api.query { id := 1 } "SELECT 1" #[]).run (mockStateWithOpenDb (.prepareV2 rawErr))).1
+    check "queryOne" expected ((api.queryOne { id := 1 } "SELECT 1" #[]).run (mockStateWithOpenDb (.prepareV2 rawErr))).1
 
 private def runWarmup (tpl : EpisodeTemplate) (rootDir : System.FilePath) (attemptRef : IO.Ref Nat)
     (tracker : CoverageTracker) : IO (CoverageTracker × Nat) := do
@@ -2573,8 +2578,8 @@ private def runSqliteSelfTestShrink (seedVal : UInt64) : IO Unit := do
     let tIo := mismatchTag "EXEC_ERR_MISMATCH sql=\"Y\" real={ kind := .ioError, sqliteCode := some 1, message := \"s\" } model={ kind := .ioError, sqliteCode := some 8, message := \"r\" }"
     let tQSome := mismatchTag "QUERYONE_ROW_MISMATCH sql=\"Z\" params=#[] real=(some #[SqliteValue.int 1]) model=none"
     let tQNone := mismatchTag "QUERYONE_ROW_MISMATCH sql=\"Z\" params=#[] real=none model=(some #[SqliteValue.int 1])"
-    let tSR := mismatchTag "RAW_STEP_MISMATCH real=Except.ok (LeanSwe.Sqlite.Raw.StepResult.row #[SqliteValue.int 1]) model=Except.ok (LeanSwe.Sqlite.Raw.StepResult.done)"
-    let tSD := mismatchTag "RAW_STEP_MISMATCH real=Except.ok (LeanSwe.Sqlite.Raw.StepResult.done) model=Except.ok (LeanSwe.Sqlite.Raw.StepResult.row #[SqliteValue.int 1])"
+    let tSR := mismatchTag "RAW_STEP_MISMATCH real=Except.ok (LeanSwe.Sqlite.StepResult.row #[SqliteValue.int 1]) model=Except.ok (LeanSwe.Sqlite.StepResult.done)"
+    let tSD := mismatchTag "RAW_STEP_MISMATCH real=Except.ok (LeanSwe.Sqlite.StepResult.done) model=Except.ok (LeanSwe.Sqlite.StepResult.row #[SqliteValue.int 1])"
     if tUnique == tIo || tUnique == tNone || tQSome == tQNone || tSR == tSD then
       throw (IO.userError s!"SQLITE_SHRINK_SELFTEST_TAG_COLLISION: {tUnique} / {tNone} / {tIo} / {tQSome} / {tQNone} / {tSR} / {tSD}")
     if (← episodeFailsTagged tpl rootDir attemptRef bugCfg (some tUnique) shrunk) then

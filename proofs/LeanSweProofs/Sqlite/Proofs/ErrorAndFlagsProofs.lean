@@ -1,10 +1,10 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.Helpers
+import LeanSweProofs.Sqlite.Proofs.Helpers
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Proof of `test_sqliteraw_mapRawError_returnsNonEmptyMessage` for `defaultOps`. -/
 theorem proof_sqliteraw_mapRawError_returnsNonEmptyMessage :
@@ -226,4 +226,4 @@ theorem raw_activeDbCount_eq : activeDbCount = defaultOps.activeDbCount := rfl
 /-- Wiring theorem: `Raw.activeStmtCount` delegates to `Raw.defaultOps.activeStmtCount`. -/
 theorem raw_activeStmtCount_eq : activeStmtCount = defaultOps.activeStmtCount := rfl
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

@@ -1,10 +1,10 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.Helpers
+import LeanSweProofs.Sqlite.Proofs.Helpers
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Shared WAL-enabled URI proof helper used across `UriHasWalProofs` and `UriProofs`. -/
 theorem uriHasWal_spec (path : String)
@@ -79,4 +79,4 @@ theorem uriHasWal_5 :
           (MockCCall.prepareV2 100 "PRAGMA journal_mode = WAL;")) :=
   uriHasWal_spec "disk_mode=memory.db" (by decide) (by decide) (by decide)
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

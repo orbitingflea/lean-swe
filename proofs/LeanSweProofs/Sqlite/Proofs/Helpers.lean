@@ -1,13 +1,13 @@
-import LeanSwe.Sqlite.Raw.Types
-import LeanSwe.Sqlite.Raw.Interface
-import LeanSwe.Sqlite.Raw.Impl
-import LeanSweProofs.Sqlite.Raw.SpecTests
+import LeanSwe.Sqlite.Types
+import LeanSwe.Sqlite.Interface
+import LeanSwe.Sqlite.Impl
+import LeanSweProofs.Sqlite.SpecTests
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Helper showing `Internal.nonEmptyMsg` never returns `""` when `fallback` is non-empty. -/
 theorem nonEmptyMsg_ne_empty (fallback msg : String) (hf : fallback ≠ "") :
@@ -1153,4 +1153,4 @@ private theorem extractLastUriModeFlagsBaAux_eq (bs : ByteArray) (stop : Nat) (h
         cases hOpt : Internal.stripFileScheme bs.data.toList <;> simp [hOpt] at hScheme ⊢
       simp [hFsF, hStripNone]
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

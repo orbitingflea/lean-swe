@@ -1,70 +1,70 @@
-import LeanSwe.Sqlite.Raw.Types
+import LeanSwe.Sqlite.Types
 
-namespace LeanSwe.Sqlite.Raw.Model
+namespace LeanSwe.Sqlite.Model
 
-open LeanSwe.Sqlite.Raw
-  (SqliteRawError DbHandle StmtHandle RawDbHandle RawStmtHandle RawHandleTable
+open LeanSwe.Sqlite
+  (SqliteRawError DbHandle StmtHandle RawHandleTable
    RawStepTag RawFinalizeResult CSqliteOpsM)
 
 /-- Look up `dbId` in `dbs`. -/
-def lookupRawDbModel (dbId : UInt64) : List (UInt64 × RawDbHandle) → Option RawDbHandle
+def lookupRawDbModel (dbId : UInt64) : List (UInt64 × UInt64) → Option UInt64
   | [] => none
   | (id, h) :: rest => if id == dbId then some h else lookupRawDbModel dbId rest
 
 /-- Tail-recursive helper for `eraseRawDbModel`. -/
-def eraseRawDbAuxModel (dbId : UInt64) (acc : List (UInt64 × RawDbHandle)) :
-    List (UInt64 × RawDbHandle) → List (UInt64 × RawDbHandle)
+def eraseRawDbAuxModel (dbId : UInt64) (acc : List (UInt64 × UInt64)) :
+    List (UInt64 × UInt64) → List (UInt64 × UInt64)
   | [] => acc.reverse
   | (id, h) :: rest =>
     if id == dbId then acc.reverse ++ rest
     else eraseRawDbAuxModel dbId ((id, h) :: acc) rest
 
 /-- Remove the first entry matching `dbId` from `dbs`. -/
-def eraseRawDbModel (dbId : UInt64) (dbs : List (UInt64 × RawDbHandle)) : List (UInt64 × RawDbHandle) :=
+def eraseRawDbModel (dbId : UInt64) (dbs : List (UInt64 × UInt64)) : List (UInt64 × UInt64) :=
   eraseRawDbAuxModel dbId [] dbs
 
 /-- Allocate a fresh `DbHandle` for `rawDb` in `t`. -/
-def insertRawDbModel (rawDb : RawDbHandle) (t : RawHandleTable) : DbHandle × RawHandleTable :=
+def insertRawDbModel (rawDb : UInt64) (t : RawHandleTable UInt64 UInt64) : DbHandle × RawHandleTable UInt64 UInt64 :=
   let id := t.nextDbId
   ({ id := id }, { t with nextDbId := id + 1, dbs := (id, rawDb) :: t.dbs })
 
 /-- Look up `stmt` in `stmts`. -/
-def lookupRawStmtModel (stmt : StmtHandle) : List (StmtHandle × RawStmtHandle) → Option RawStmtHandle
+def lookupRawStmtModel (stmt : StmtHandle) : List (StmtHandle × UInt64) → Option UInt64
   | [] => none
   | (sh, h) :: rest => if sh == stmt then some h else lookupRawStmtModel stmt rest
 
 /-- Tail-recursive helper for `eraseRawStmtModel`. -/
-def eraseRawStmtAuxModel (stmt : StmtHandle) (acc : List (StmtHandle × RawStmtHandle)) :
-    List (StmtHandle × RawStmtHandle) → List (StmtHandle × RawStmtHandle)
+def eraseRawStmtAuxModel (stmt : StmtHandle) (acc : List (StmtHandle × UInt64)) :
+    List (StmtHandle × UInt64) → List (StmtHandle × UInt64)
   | [] => acc.reverse
   | (sh, h) :: rest =>
     if sh == stmt then acc.reverse ++ rest
     else eraseRawStmtAuxModel stmt ((sh, h) :: acc) rest
 
 /-- Remove the first entry matching `stmt` from `stmts`. -/
-def eraseRawStmtModel (stmt : StmtHandle) (stmts : List (StmtHandle × RawStmtHandle)) :
-    List (StmtHandle × RawStmtHandle) :=
+def eraseRawStmtModel (stmt : StmtHandle) (stmts : List (StmtHandle × UInt64)) :
+    List (StmtHandle × UInt64) :=
   eraseRawStmtAuxModel stmt [] stmts
 
 /-- Allocate a fresh `StmtHandle` associated with `dbId` for `rawStmt` in `t`. -/
-def insertRawStmtModel (dbId : UInt64) (rawStmt : RawStmtHandle) (t : RawHandleTable) :
-    StmtHandle × RawHandleTable :=
+def insertRawStmtModel (dbId : UInt64) (rawStmt : UInt64) (t : RawHandleTable UInt64 UInt64) :
+    StmtHandle × RawHandleTable UInt64 UInt64 :=
   let id := t.nextStmtId
   let sh : StmtHandle := { id := id, dbId := dbId }
   (sh, { t with nextStmtId := id + 1, stmts := (sh, rawStmt) :: t.stmts })
 
 /-- Return `true` iff `stmts` contains an active statement belonging to `dbId`. -/
-def hasActiveStmtForDbModel (dbId : UInt64) : List (StmtHandle × RawStmtHandle) → Bool
+def hasActiveStmtForDbModel (dbId : UInt64) : List (StmtHandle × UInt64) → Bool
   | [] => false
   | (sh, _) :: rest => sh.dbId == dbId || hasActiveStmtForDbModel dbId rest
 
 /-- Table transition allocating a new `DbHandle` for `rawDb`. -/
-def tableInsertDb (rawDb : RawDbHandle) (t : RawHandleTable) : DbHandle × RawHandleTable :=
+def tableInsertDb (rawDb : UInt64) (t : RawHandleTable UInt64 UInt64) : DbHandle × RawHandleTable UInt64 UInt64 :=
   insertRawDbModel rawDb t
 
 /-- Table transition validating that `dbId` is open and has no active statements prior to `close`. -/
-def tableCheckCloseDb (dbId : UInt64) (t : RawHandleTable) :
-    Except SqliteRawError RawDbHandle × RawHandleTable :=
+def tableCheckCloseDb (dbId : UInt64) (t : RawHandleTable UInt64 UInt64) :
+    Except SqliteRawError UInt64 × RawHandleTable UInt64 UInt64 :=
   match lookupRawDbModel dbId t.dbs with
   | none => (.error (.misuse 21 "invalid or closed database handle"), t)
   | some rawDb =>
@@ -74,43 +74,39 @@ def tableCheckCloseDb (dbId : UInt64) (t : RawHandleTable) :
       (.ok rawDb, t)
 
 /-- Table transition erasing closed `dbId`. -/
-def tableEraseDb (dbId : UInt64) (t : RawHandleTable) : Unit × RawHandleTable :=
+def tableEraseDb (dbId : UInt64) (t : RawHandleTable UInt64 UInt64) : Unit × RawHandleTable UInt64 UInt64 :=
   ((), { t with dbs := eraseRawDbModel dbId t.dbs })
 
 /-- Table transition looking up `dbId`. -/
-def tableLookupDb (dbId : UInt64) (t : RawHandleTable) : Option RawDbHandle × RawHandleTable :=
+def tableLookupDb (dbId : UInt64) (t : RawHandleTable UInt64 UInt64) : Option UInt64 × RawHandleTable UInt64 UInt64 :=
   (lookupRawDbModel dbId t.dbs, t)
 
 /-- Table transition allocating a new `StmtHandle` on `dbId`. -/
-def tableInsertStmt (dbId : UInt64) (rawStmt : RawStmtHandle) (t : RawHandleTable) :
-    StmtHandle × RawHandleTable :=
+def tableInsertStmt (dbId : UInt64) (rawStmt : UInt64) (t : RawHandleTable UInt64 UInt64) :
+    StmtHandle × RawHandleTable UInt64 UInt64 :=
   insertRawStmtModel dbId rawStmt t
 
 /-- Table transition looking up `stmt`. -/
-def tableLookupStmt (stmt : StmtHandle) (t : RawHandleTable) : Option RawStmtHandle × RawHandleTable :=
+def tableLookupStmt (stmt : StmtHandle) (t : RawHandleTable UInt64 UInt64) : Option UInt64 × RawHandleTable UInt64 UInt64 :=
   (lookupRawStmtModel stmt t.stmts, t)
 
 /-- Table transition erasing finalized `stmt`. -/
-def tableEraseStmt (stmt : StmtHandle) (t : RawHandleTable) : Unit × RawHandleTable :=
+def tableEraseStmt (stmt : StmtHandle) (t : RawHandleTable UInt64 UInt64) : Unit × RawHandleTable UInt64 UInt64 :=
   ((), { t with stmts := eraseRawStmtModel stmt t.stmts })
 
 /-- Table transition reading active DB handle count. -/
-def tableActiveDbCount (t : RawHandleTable) : Nat × RawHandleTable :=
+def tableActiveDbCount (t : RawHandleTable UInt64 UInt64) : Nat × RawHandleTable UInt64 UInt64 :=
   (t.dbs.length, t)
 
 /-- Table transition reading active statement handle count. -/
-def tableActiveStmtCount (t : RawHandleTable) : Nat × RawHandleTable :=
+def tableActiveStmtCount (t : RawHandleTable UInt64 UInt64) : Nat × RawHandleTable UInt64 UInt64 :=
   (t.stmts.length, t)
 
-/-- Extract the deterministic token from `RawDbHandle` (`0` for `.ext`). -/
-def rawDbTokenModel : RawDbHandle → UInt64
-  | .mock tok => tok
-  | .ext _ => 0
+/-- Return the deterministic `UInt64` token for a model database handle. -/
+def rawDbTokenModel (tok : UInt64) : UInt64 := tok
 
-/-- Extract the deterministic token from `RawStmtHandle` (`0` for `.ext`). -/
-def rawStmtTokenModel : RawStmtHandle → UInt64
-  | .mock tok => tok
-  | .ext _ => 0
+/-- Return the deterministic `UInt64` token for a model statement handle. -/
+def rawStmtTokenModel (tok : UInt64) : UInt64 := tok
 
 /-- Raw C column cell stored in `SqliteRawState` for `column*` hooks. -/
 inductive RawModelColumn where
@@ -129,7 +125,7 @@ inductive RawModelColumn where
 /-- Deterministic state for single-step `CSqliteOpsM` and `RawSqliteOpsM` transitions. -/
 structure SqliteRawState where
   /-- Lean-managed handle registry updated via `CSqliteOpsM.modifyTable`. -/
-  table : RawHandleTable := {}
+  table : RawHandleTable UInt64 UInt64 := {}
   /-- Next deterministic raw DB token (`100`-based). -/
   nextRawDbTok : UInt64 := 100
   /-- Next deterministic raw statement token (`200`-based). -/
@@ -168,14 +164,14 @@ def hasLiveRawStmtForDbModel (dbTok : UInt64) : List (UInt64 × UInt64) → Bool
   | [] => false
   | (d, _) :: rest => d == dbTok || hasLiveRawStmtForDbModel dbTok rest
 
-/-- Deterministic pure `CSqliteOpsM (StateM SqliteRawState)` model of thin `sqlite3_*` hooks. -/
-def modelCSqliteOps : CSqliteOpsM (StateM SqliteRawState) :=
+/-- Deterministic pure `CSqliteOpsM (StateM SqliteRawState) UInt64 UInt64` model of thin `sqlite3_*` hooks. -/
+def modelCSqliteOps : CSqliteOpsM (StateM SqliteRawState) UInt64 UInt64 :=
   { modifyTable := fun f s =>
       let (a, t') := f s.table
       (a, { s with table := t' })
     openV2 := fun _ _ s =>
       let tok := s.nextRawDbTok
-      (.ok (.mock tok), { s with nextRawDbTok := tok + 1, liveRawDbs := s.liveRawDbs ++ [tok] })
+      (.ok tok, { s with nextRawDbTok := tok + 1, liveRawDbs := s.liveRawDbs ++ [tok] })
     close := fun rawDb s =>
       let tok := rawDbTokenModel rawDb
       if !(s.liveRawDbs.contains tok) then
@@ -210,7 +206,7 @@ def modelCSqliteOps : CSqliteOpsM (StateM SqliteRawState) :=
             [.row, .done]
           else
             s.stepQueue
-        (.ok (some (.mock stTok), consumed),
+        (.ok (some stTok, consumed),
           { s with
             nextRawStmtTok := stTok + 1
             liveRawStmts := s.liveRawStmts ++ [(dbTok, stTok)]
@@ -336,4 +332,4 @@ def modelCSqliteOps : CSqliteOpsM (StateM SqliteRawState) :=
     unlockStmt := fun {_} sh s =>
       ((), { s with heldStmtLocks := eraseStmtLockModel sh s.heldStmtLocks }) }
 
-end LeanSwe.Sqlite.Raw.Model
+end LeanSwe.Sqlite.Model

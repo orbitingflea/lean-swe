@@ -1,15 +1,14 @@
 import Core.Obeys
-import LeanSwe.Sqlite.Raw.Types
-import LeanSweProofs.Sqlite.Raw.Model
-import LeanSweProofs.Sqlite.Raw.Model.PureSpec
-import LeanSweProofs.Sqlite.Raw.Model.World
-import LeanSweProofs.Sqlite.Raw.Model.Refines
-import LeanSwe.Sqlite.Raw.Impl
-import LeanSwe.Sqlite.Raw.Interface
+import LeanSwe.Sqlite.Types
+import LeanSweProofs.Sqlite.Model.PureSpec
+import LeanSweProofs.Sqlite.Model.World
+import LeanSweProofs.Sqlite.Model.Refines
+import LeanSwe.Sqlite.Impl
+import LeanSwe.Sqlite.Interface
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 private theorem dite_true_eq {α : Sort _} {P : Prop} [Decidable P] (h : P)
     (t : P → α) (e : ¬ P → α) : (if hp : P then t hp else e hp) = t h := by
@@ -35,13 +34,13 @@ private theorem ite_false_eq {α : Sort _} {P : Prop} [Decidable P] (h : ¬ P)
   · next hp => exact absurd hp h
   · rfl
 
-/-- `Internal.mapRawError` equals `Model.mapRawErrorModel`. -/
-theorem internal_mapRawError_eq : Internal.mapRawError = Model.mapRawErrorModel := by
+/-- `Internal.mapRawError` equals `Model.mapRawError`. -/
+theorem internal_mapRawError_eq : Internal.mapRawError = Model.mapRawError := by
   funext err
   cases err <;> rfl
 
-/-- Public `mapRawError` satisfies `Core.ObeysPureEq` against `Model.mapRawErrorModel`. -/
-theorem mapRawError_obeys : Core.ObeysPureEq mapRawError Model.mapRawErrorModel := by
+/-- Public `mapRawError` satisfies `Core.ObeysPureEq` against `Model.mapRawError`. -/
+theorem mapRawError_obeys : Core.ObeysPureEq mapRawError Model.mapRawError := by
   intro err
   cases err <;> rfl
 
@@ -216,7 +215,7 @@ private theorem scanSqlTailBa_normal_eq (bs : ByteArray) (idx : Nat) :
     Internal.scanSqlTailBa .normal bs idx = Model.scanSqlTailBaModel .normal bs idx :=
   scanSqlTailBaAux_eq .normal bs idx (bs.size - idx)
 
-private theorem lookupRawDb_eq (dbId : UInt64) (dbs : List (UInt64 × RawDbHandle)) :
+private theorem lookupRawDb_eq (dbId : UInt64) (dbs : List (UInt64 × UInt64)) :
     Internal.lookupRawDb dbId dbs = Model.lookupRawDbModel dbId dbs := by
   induction dbs with
   | nil => rfl
@@ -225,7 +224,7 @@ private theorem lookupRawDb_eq (dbId : UInt64) (dbs : List (UInt64 × RawDbHandl
     simp only [Internal.lookupRawDb, Model.lookupRawDbModel, ih]
 
 private theorem eraseRawDbAux_eq (dbId : UInt64)
-    (acc dbs : List (UInt64 × RawDbHandle)) :
+    (acc dbs : List (UInt64 × UInt64)) :
     Internal.eraseRawDbAux dbId acc dbs = Model.eraseRawDbAuxModel dbId acc dbs := by
   induction dbs generalizing acc with
   | nil => rfl
@@ -233,11 +232,11 @@ private theorem eraseRawDbAux_eq (dbId : UInt64)
     rcases hd with ⟨id, h⟩
     simp only [Internal.eraseRawDbAux, Model.eraseRawDbAuxModel, ih ((id, h) :: acc)]
 
-private theorem eraseRawDb_eq (dbId : UInt64) (dbs : List (UInt64 × RawDbHandle)) :
+private theorem eraseRawDb_eq (dbId : UInt64) (dbs : List (UInt64 × UInt64)) :
     Internal.eraseRawDb dbId dbs = Model.eraseRawDbModel dbId dbs :=
   eraseRawDbAux_eq dbId [] dbs
 
-private theorem lookupRawStmt_eq (stmt : StmtHandle) (stmts : List (StmtHandle × RawStmtHandle)) :
+private theorem lookupRawStmt_eq (stmt : StmtHandle) (stmts : List (StmtHandle × UInt64)) :
     Internal.lookupRawStmt stmt stmts = Model.lookupRawStmtModel stmt stmts := by
   induction stmts with
   | nil => rfl
@@ -246,7 +245,7 @@ private theorem lookupRawStmt_eq (stmt : StmtHandle) (stmts : List (StmtHandle �
     simp only [Internal.lookupRawStmt, Model.lookupRawStmtModel, ih]
 
 private theorem eraseRawStmtAux_eq (stmt : StmtHandle)
-    (acc stmts : List (StmtHandle × RawStmtHandle)) :
+    (acc stmts : List (StmtHandle × UInt64)) :
     Internal.eraseRawStmtAux stmt acc stmts = Model.eraseRawStmtAuxModel stmt acc stmts := by
   induction stmts generalizing acc with
   | nil => rfl
@@ -254,11 +253,11 @@ private theorem eraseRawStmtAux_eq (stmt : StmtHandle)
     rcases hd with ⟨sh, h⟩
     simp only [Internal.eraseRawStmtAux, Model.eraseRawStmtAuxModel, ih ((sh, h) :: acc)]
 
-private theorem eraseRawStmt_eq (stmt : StmtHandle) (stmts : List (StmtHandle × RawStmtHandle)) :
+private theorem eraseRawStmt_eq (stmt : StmtHandle) (stmts : List (StmtHandle × UInt64)) :
     Internal.eraseRawStmt stmt stmts = Model.eraseRawStmtModel stmt stmts :=
   eraseRawStmtAux_eq stmt [] stmts
 
-private theorem hasActiveStmtForDb_eq (dbId : UInt64) (stmts : List (StmtHandle × RawStmtHandle)) :
+private theorem hasActiveStmtForDb_eq (dbId : UInt64) (stmts : List (StmtHandle × UInt64)) :
     Internal.hasActiveStmtForDb dbId stmts = Model.hasActiveStmtForDbModel dbId stmts := by
   induction stmts with
   | nil => rfl
@@ -266,50 +265,36 @@ private theorem hasActiveStmtForDb_eq (dbId : UInt64) (stmts : List (StmtHandle 
     rcases hd with ⟨sh, h⟩
     simp only [Internal.hasActiveStmtForDb, Model.hasActiveStmtForDbModel, ih]
 
-private theorem modify_checkCloseDb_eq {m : Type → Type} (cops : CSqliteOpsM m) (dbId : UInt64) :
-    cops.modifyTable (fun t : RawHandleTable =>
-      match Internal.lookupRawDb dbId t.dbs with
-      | none => (Except.error (.misuse 21 "invalid or closed database handle"), t)
-      | some rawDb =>
-        if Internal.hasActiveStmtForDb dbId t.stmts then
-          (Except.error (.busy 5 "unable to close database due to unfinalized statements"), t)
-        else
-          (Except.ok rawDb, t)) = cops.modifyTable (Model.tableCheckCloseDb dbId) := by
-  congr 1
-  funext t
-  simp only [Model.tableCheckCloseDb, lookupRawDb_eq, hasActiveStmtForDb_eq]
-  rfl
-
-private theorem modify_eraseDb_eq {m : Type → Type} (cops : CSqliteOpsM m) (dbId : UInt64) :
-    cops.modifyTable (fun t : RawHandleTable => ((), { t with dbs := Internal.eraseRawDb dbId t.dbs })) =
+private theorem modify_eraseDb_eq {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64) (dbId : UInt64) :
+    cops.modifyTable (fun t : RawHandleTable UInt64 UInt64 => ((), { t with dbs := Internal.eraseRawDb dbId t.dbs })) =
       cops.modifyTable (Model.tableEraseDb dbId) := by
   congr 1
   funext t
   simp only [Model.tableEraseDb, eraseRawDb_eq]
 
-private theorem modify_lookupDb_eq {m : Type → Type} (cops : CSqliteOpsM m) (dbId : UInt64) :
-    cops.modifyTable (fun t : RawHandleTable => (Internal.lookupRawDb dbId t.dbs, t)) =
+private theorem modify_lookupDb_eq {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64) (dbId : UInt64) :
+    cops.modifyTable (fun t : RawHandleTable UInt64 UInt64 => (Internal.lookupRawDb dbId t.dbs, t)) =
       cops.modifyTable (Model.tableLookupDb dbId) := by
   congr 1
   funext t
   simp only [Model.tableLookupDb, lookupRawDb_eq]
 
-private theorem modify_lookupStmt_eq {m : Type → Type} (cops : CSqliteOpsM m) (stmt : StmtHandle) :
-    cops.modifyTable (fun t : RawHandleTable => (Internal.lookupRawStmt stmt t.stmts, t)) =
+private theorem modify_lookupStmt_eq {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64) (stmt : StmtHandle) :
+    cops.modifyTable (fun t : RawHandleTable UInt64 UInt64 => (Internal.lookupRawStmt stmt t.stmts, t)) =
       cops.modifyTable (Model.tableLookupStmt stmt) := by
   congr 1
   funext t
   simp only [Model.tableLookupStmt, lookupRawStmt_eq]
 
-private theorem modify_eraseStmt_eq {m : Type → Type} (cops : CSqliteOpsM m) (stmt : StmtHandle) :
-    cops.modifyTable (fun t : RawHandleTable => ((), { t with stmts := Internal.eraseRawStmt stmt t.stmts })) =
+private theorem modify_eraseStmt_eq {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64) (stmt : StmtHandle) :
+    cops.modifyTable (fun t : RawHandleTable UInt64 UInt64 => ((), { t with stmts := Internal.eraseRawStmt stmt t.stmts })) =
       cops.modifyTable (Model.tableEraseStmt stmt) := by
   congr 1
   funext t
   simp only [Model.tableEraseStmt, eraseRawStmt_eq]
 
-private theorem stepPragmaLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) (fuel : Nat) :
+private theorem stepPragmaLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) (fuel : Nat) :
     Internal.stepPragmaLoop cops rawStmt fuel = Model.stepPragmaLoopModel cops rawStmt fuel := by
   induction fuel with
   | zero => rfl
@@ -318,26 +303,28 @@ private theorem stepPragmaLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteO
     rfl
 
 private theorem runSetupPragma_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) (rawDb : RawDbHandle) (sql : String) :
+    (cops : CSqliteOpsM m UInt64 UInt64) (rawDb : UInt64) (sql : String) :
     Internal.runSetupPragma cops rawDb sql = Model.runSetupPragmaModel cops rawDb sql := by
   simp only [Internal.runSetupPragma, Model.runSetupPragmaModel, stepPragmaLoop_eq]
-  rfl
+  congr 1
+  funext r
+  rcases r with _ | ⟨_ | _, _⟩ <;> rfl
 
 private theorem setupConnection_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) (path : String) (cfg : OpenConfig) (rawDb : RawDbHandle) :
+    (cops : CSqliteOpsM m UInt64 UInt64) (path : String) (cfg : OpenConfig) (rawDb : UInt64) :
     Internal.setupConnection cops path cfg rawDb =
       Model.setupConnectionModel cops path cfg rawDb := by
   simp only [Internal.setupConnection, Model.setupConnectionModel,
     runSetupPragma_eq, shouldEnableWal_eq]
   rfl
 
-private theorem bindOneParam_eq {m : Type → Type} (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) (idx : UInt32) (v : SqliteValue) :
+private theorem bindOneParam_eq {m : Type → Type} (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) (idx : UInt32) (v : SqliteValue) :
     Internal.bindOneParam cops rawStmt idx v = Model.bindOneParamModel cops rawStmt idx v := by
   cases v <;> rfl
 
-private theorem bindLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) (params : Array SqliteValue) (rem : Nat) :
+private theorem bindLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) (params : Array SqliteValue) (rem : Nat) :
     Internal.bindLoop cops rawStmt params rem = Model.bindLoopModel cops rawStmt params rem := by
   induction rem with
   | zero => rfl
@@ -346,8 +333,8 @@ private theorem bindLoop_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
       internal_mapRawError_eq, ih]
     rfl
 
-private theorem decodeColumns_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m)
-    (rawStmt : RawStmtHandle) (total rem : Nat) (acc : Array SqliteValue) :
+private theorem decodeColumns_eq {m : Type → Type} [Monad m] (cops : CSqliteOpsM m UInt64 UInt64)
+    (rawStmt : UInt64) (total rem : Nat) (acc : Array SqliteValue) :
     Internal.decodeColumns cops rawStmt total rem acc =
       Model.decodeColumnsModel cops rawStmt total rem acc := by
   induction rem generalizing acc with
@@ -358,42 +345,59 @@ private theorem decodeColumns_eq {m : Type → Type} [Monad m] (cops : CSqliteOp
     rfl
 
 private theorem withStmtLock_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) {α : Type} (stmt : StmtHandle) (act : m α) :
+    (cops : CSqliteOpsM m UInt64 UInt64) {α : Type} (stmt : StmtHandle) (act : m α) :
     Internal.withStmtLock cops stmt act = Model.withStmtLockModel cops stmt act :=
   rfl
 
 private theorem mkRawOps_openDb_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).openDb = (Model.mkRawOpsModel cops).openDb := by
   funext path cfg
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
   rw [internal_mapRawError_eq, attachOpenPath_eq, hasZeroByteBa_eq, computeOpenFlags_eq]
   simp only [setupConnection_eq]
-  rfl
+  split
+  · rfl
+  · split
+    · rfl
+    · split
+      · rfl
+      · split
+        · rfl
+        · congr 1
+          funext r
+          cases r with
+          | error _ => rfl
+          | ok rawDb =>
+            dsimp only
+            congr 1
 
 private theorem mkRawOps_closeDb_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).closeDb = (Model.mkRawOpsModel cops).closeDb := by
   funext db
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
-  erw [modify_checkCloseDb_eq cops db.id]
   rw [internal_mapRawError_eq]
   congr 1
-  funext lookupRes
-  cases lookupRes with
-  | error _ => rfl
-  | ok rawDb =>
-    dsimp only
-    congr 1
-    funext closeRes
-    cases closeRes with
+  · congr 1
+    funext t
+    simp only [Model.tableCheckCloseDb, lookupRawDb_eq, hasActiveStmtForDb_eq]
+    cases Model.lookupRawDbModel db.id t.dbs <;> rfl
+  · funext lookupRes
+    cases lookupRes with
     | error _ => rfl
-    | ok _ =>
+    | ok rawDb =>
       dsimp only
-      rw [modify_eraseDb_eq cops db.id]
+      congr 1
+      funext closeRes
+      cases closeRes with
+      | error _ => rfl
+      | ok _ =>
+        dsimp only
+        rw [modify_eraseDb_eq cops db.id]
 
 private theorem mkRawOps_prepare_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).prepare = (Model.mkRawOpsModel cops).prepare := by
   funext db sql
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
@@ -420,7 +424,7 @@ private theorem mkRawOps_prepare_eq {m : Type → Type} [Monad m] [MonadFinally 
         rfl
 
 private theorem mkRawOps_bind_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).bind = (Model.mkRawOpsModel cops).bind := by
   funext stmt params
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
@@ -454,7 +458,7 @@ private theorem mkRawOps_bind_eq {m : Type → Type} [Monad m] [MonadFinally m]
           rw [bindLoop_eq cops rawStmt params params.size]
 
 private theorem mkRawOps_step_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).step = (Model.mkRawOpsModel cops).step := by
   funext stmt
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
@@ -486,7 +490,7 @@ private theorem mkRawOps_step_eq {m : Type → Type} [Monad m] [MonadFinally m]
           rfl
 
 private theorem mkRawOps_finalize_eq {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     (Internal.mkRawOps cops).finalize = (Model.mkRawOpsModel cops).finalize := by
   funext stmt
   dsimp only [Internal.mkRawOps, Model.mkRawOpsModel]
@@ -510,7 +514,7 @@ private theorem mkRawOps_finalize_eq {m : Type → Type} [Monad m] [MonadFinally
 
 /-- `Internal.mkRawOps cops` equals `Model.mkRawOpsModel cops` for every monad `m` and `cops`. -/
 theorem mkRawOps_eq_model {m : Type → Type} [Monad m] [MonadFinally m]
-    (cops : CSqliteOpsM m) :
+    (cops : CSqliteOpsM m UInt64 UInt64) :
     Internal.mkRawOps cops = Model.mkRawOpsModel cops := by
   have hMap : (Internal.mkRawOps cops).mapRawError = (Model.mkRawOpsModel cops).mapRawError :=
     internal_mapRawError_eq
@@ -529,4 +533,4 @@ theorem mkRawOps_eq_model {m : Type → Type} [Monad m] [MonadFinally m]
   subst hMap hOpen hClose hPrep hBind hStep hFin hDbCnt hStCnt
   rfl
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

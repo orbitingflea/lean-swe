@@ -45,7 +45,7 @@ extern_lib «leanswe_envvars» pkg := do
 
 extern_lib «leanswe_sqlite» pkg := do
   let lean ← getLeanInstall
-  let cDir := pkg.dir / "LeanSwe" / "Sqlite" / "Raw" / "c"
+  let cDir := pkg.dir / "LeanSwe" / "Sqlite" / "c"
   let sqliteO := pkg.buildDir / "c" / "sqlite3.o"
   let sqliteSrc ← inputTextFile (cDir / "sqlite3.c")
   let sqliteOJob ← buildO sqliteO sqliteSrc

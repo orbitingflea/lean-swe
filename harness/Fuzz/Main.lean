@@ -370,7 +370,7 @@ private def suiteTargetPackages : String → Array String
   | "compress" => #["LeanSwe.Compress"]
   | "postfork" => #["LeanSwe.PostFork"]
   | "processsandbox" => #["LeanSwe.ProcessSandbox"]
-  | "sqlite" => #["LeanSwe.Sqlite.Raw", "LeanSwe.Sqlite"]
+  | "sqlite" => #["LeanSwe.Sqlite"]
   | "git" => #["LeanSwe.Git"]
   | "json" => #["LeanSwe.Json"]
   | "toml" => #["LeanSwe.Toml"]

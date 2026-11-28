@@ -22,4 +22,4 @@ harness/.lake/build/bin/leanswe-fuzz --smoke
 
 ## License
 
-`lean-swe` is released under the Apache License 2.0. See [LICENSE](LICENSE) for the full license text. The bundled SQLite amalgamation in `LeanSwe/Sqlite/Raw/c/sqlite3.c` and `LeanSwe/Sqlite/Raw/c/sqlite3.h` is in the public domain, and both files disclaim copyright.
+`lean-swe` is released under the Apache License 2.0. See [LICENSE](LICENSE) for the full license text. The bundled SQLite amalgamation in `LeanSwe/Sqlite/c/sqlite3.c` and `LeanSwe/Sqlite/c/sqlite3.h` is in the public domain, and both files disclaim copyright.

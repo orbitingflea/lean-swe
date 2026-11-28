@@ -23,8 +23,8 @@ open Lean
 
 private def vendoredFileSha256 : Std.HashMap String String :=
   Std.HashMap.emptyWithCapacity 4
-    |>.insert "LeanSwe/Sqlite/Raw/c/sqlite3.c" "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52"
-    |>.insert "LeanSwe/Sqlite/Raw/c/sqlite3.h" "d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c"
+    |>.insert "LeanSwe/Sqlite/c/sqlite3.c" "0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52"
+    |>.insert "LeanSwe/Sqlite/c/sqlite3.h" "d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c"
 
 private def defaultMaxCodeLines : Nat := 35
 private def defaultMaxBranches : Nat := 8

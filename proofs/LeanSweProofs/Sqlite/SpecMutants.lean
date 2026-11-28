@@ -1,11 +1,11 @@
 import Core.NondetTest
 import Core.Assumptions
-import LeanSwe.Sqlite.Raw.Types
-import LeanSweProofs.Sqlite.Raw.SpecTests
+import LeanSwe.Sqlite.Types
+import LeanSweProofs.Sqlite.SpecTests
 
-/-! Compile-time negative specification mutants for `LeanSwe.Sqlite.Raw`. -/
+/-! Compile-time negative specification mutants for `LeanSwe.Sqlite`. -/
 
-namespace LeanSwe.Sqlite.Raw
+namespace LeanSwe.Sqlite
 
 open Core (NondetTest)
 open Core.NondetTest
@@ -48,7 +48,7 @@ private def stubRawOps : RawSqliteOps :=
     activeDbCount := pure 0
     activeStmtCount := pure 0 }
 
-private def stubBaseMkRaw (cops : CSqliteOpsM (StateM MockCState)) : RawSqliteOpsM (StateM MockCState) :=
+private def stubBaseMkRaw (cops : CSqliteOpsM (StateM MockCState) UInt64 UInt64) : RawSqliteOpsM (StateM MockCState) :=
   { mapRawError := stubMapRawError
     openDb := fun _ _ => pure (.error { kind := .ioError, message := "stub" })
     closeDb := fun db => do
@@ -273,7 +273,7 @@ example : ¬ Core.AllPass
     (test_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql fun cops =>
       { stubBaseMkRaw cops with
         prepare := fun _ sql => do
-          let _ ← cops.prepareV2 (.mock 100) sql
+          let _ ← cops.prepareV2 100 sql
           pure (.error { kind := .invalidInput, message := "called C on NUL" }) }) := by
   intro h
   have h0 := h "SELECT " "1" 99 (by decide)
@@ -286,7 +286,7 @@ example : ¬ Core.AllPass
     (test_sqliteraw_prepare_acceptsCommentsAndWhitespaceInTail fun cops =>
       { stubBaseMkRaw cops with
         prepare := fun _ sql => do
-          match ← cops.prepareV2 (.mock 100) sql with
+          match ← cops.prepareV2 100 sql with
           | .error e => pure (.error (stubMapRawError e))
           | .ok (none, _) => pure (.error { kind := .misuse, message := "empty" })
           | .ok (some rawStmt, consumed) =>
@@ -309,7 +309,7 @@ example : ¬ Core.AllPass
     (test_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinalizes fun cops =>
       { stubBaseMkRaw cops with
         prepare := fun _ sql => do
-          match ← cops.prepareV2 (.mock 100) sql with
+          match ← cops.prepareV2 100 sql with
           | .error e => pure (.error (stubMapRawError e))
           | .ok (none, _) => pure (.error { kind := .misuse, message := "empty" })
           | .ok (some rawStmt, _) =>
@@ -328,7 +328,7 @@ example : ¬ Core.AllPass
     (test_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinalizes fun cops =>
       { stubBaseMkRaw cops with
         prepare := fun _ sql => do
-          match ← cops.prepareV2 (.mock 100) sql with
+          match ← cops.prepareV2 100 sql with
           | .error e => pure (.error (stubMapRawError e))
           | .ok _ =>
             pure (.error { kind := .misuse, message := "forgot to finalize rawStmt" }) }) := by
@@ -472,7 +472,7 @@ example : ¬ Core.AllPass
     (test_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinalizes fun cops =>
       { stubBaseMkRaw cops with
         prepare := fun _ sql => do
-          match ← cops.prepareV2 (.mock 100) sql with
+          match ← cops.prepareV2 100 sql with
           | .error e => pure (.error (stubMapRawError e))
           | .ok (none, _) => pure (.error { kind := .misuse, message := "empty" })
           | .ok (some rawStmt, _) =>
@@ -645,4 +645,4 @@ example : ¬ Core.AllPass
   have hHasTextCall := h0.2.2.1.2.1
   exact absurd hHasTextCall (by decide)
 
-end LeanSwe.Sqlite.Raw
+end LeanSwe.Sqlite

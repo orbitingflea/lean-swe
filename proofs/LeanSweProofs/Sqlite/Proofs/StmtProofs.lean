@@ -1,10 +1,10 @@
-import LeanSweProofs.Sqlite.Raw.Proofs.Helpers
+import LeanSweProofs.Sqlite.Proofs.Helpers
 
-namespace LeanSwe.Sqlite.Raw.Proofs
+namespace LeanSwe.Sqlite.Proofs
 
 open Core
 open Core.NondetTest
-open LeanSwe.Sqlite.Raw
+open LeanSwe.Sqlite
 
 /-- Proof of `test_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql` for `Internal.mkRawOps`. -/
 theorem proof_sqliteraw_prepare_rejectsNulClosedDbAndEmptySql :
@@ -234,7 +234,7 @@ theorem reach_sqliteraw_prepare_rejectsMultiStmtAndUnclosedBlockCommentAndFinali
 
 private theorem bindLoop_5_none (iVal : Int64) (fVal : Float) (sVal : String) (bVal : ByteArray)
     (calls0 : List MockCCall) :
-    (Internal.bindLoop mockCOps (.mock 200) #[.null, .int iVal, .real fVal, .text sVal, .bytes bVal] 5).run
+    (Internal.bindLoop mockCOps (200 : UInt64) #[.null, .int iVal, .real fVal, .text sVal, .bytes bVal] 5).run
       { (mockStateWithOpenStmt 5) with calls := calls0 } =
     (.ok (),
       { (mockStateWithOpenStmt 5) with
@@ -251,7 +251,7 @@ private theorem bindLoop_5_none (iVal : Int64) (fVal : Float) (sVal : String) (b
 
 private theorem bindLoop_5_fail4 (iVal : Int64) (fVal : Float) (sVal : String) (bVal : ByteArray)
     (calls0 : List MockCCall) :
-    (Internal.bindLoop mockCOps (.mock 200) #[.null, .int iVal, .real fVal, .text sVal, .bytes bVal] 5).run
+    (Internal.bindLoop mockCOps (200 : UInt64) #[.null, .int iVal, .real fVal, .text sVal, .bytes bVal] 5).run
       { (mockStateWithOpenStmt 5) with
         failStep := .bindAt 4 (.ioFailure 10 "bind text ioerr")
         calls := calls0 } =
@@ -269,12 +269,12 @@ private theorem bindLoop_5_fail4 (iVal : Int64) (fVal : Float) (sVal : String) (
     Internal.mapRawError, Internal.nonEmptyMsg]
   simp [hLive]
 
-private theorem mockCOps_modifyTable_eq {α : Type} (f : RawHandleTable → α × RawHandleTable)
+private theorem mockCOps_modifyTable_eq {α : Type} (f : RawHandleTable UInt64 UInt64 → α × RawHandleTable UInt64 UInt64)
     (s : MockCState) :
     mockCOps.modifyTable f s =
       ((f s.table).1, { s with table := (f s.table).2 }) := rfl
 
-private theorem mockCOps_reset_eq (rawStmt : RawStmtHandle) (s : MockCState) :
+private theorem mockCOps_reset_eq (rawStmt : UInt64) (s : MockCState) :
     mockCOps.reset rawStmt s =
       (let stTok := rawStmtToken rawStmt
        let s1 : MockCState := { s with calls := s.calls ++ [MockCCall.reset stTok] }
@@ -285,7 +285,7 @@ private theorem mockCOps_reset_eq (rawStmt : RawStmtHandle) (s : MockCState) :
          | .reset err => (.error err, s1)
          | _ => (.ok (), s1)) := rfl
 
-private theorem mockCOps_clearBindings_eq (rawStmt : RawStmtHandle) (s : MockCState) :
+private theorem mockCOps_clearBindings_eq (rawStmt : UInt64) (s : MockCState) :
     mockCOps.clearBindings rawStmt s =
       (let stTok := rawStmtToken rawStmt
        let s1 : MockCState := { s with calls := s.calls ++ [MockCCall.clearBindings stTok] }
@@ -296,7 +296,7 @@ private theorem mockCOps_clearBindings_eq (rawStmt : RawStmtHandle) (s : MockCSt
          | .clearBindings err => (.error err, s1)
          | _ => (.ok (), s1)) := rfl
 
-private theorem mockCOps_bindParamCount_eq (rawStmt : RawStmtHandle) (s : MockCState) :
+private theorem mockCOps_bindParamCount_eq (rawStmt : UInt64) (s : MockCState) :
     mockCOps.bindParamCount rawStmt s =
       (let stTok := rawStmtToken rawStmt
        let s1 : MockCState := { s with calls := s.calls ++ [MockCCall.bindParamCount stTok] }
@@ -307,7 +307,7 @@ private theorem mockCOps_bindParamCount_eq (rawStmt : RawStmtHandle) (s : MockCS
          | .bindParamCount err => (.error err, s1)
          | _ => (.ok s1.expectedBindParams, s1)) := rfl
 
-private theorem mockCOps_step_eq (rawStmt : RawStmtHandle) (s : MockCState) :
+private theorem mockCOps_step_eq (rawStmt : UInt64) (s : MockCState) :
     mockCOps.step rawStmt s =
       (let stTok := rawStmtToken rawStmt
        let idx := s.stepCount
@@ -326,7 +326,7 @@ private theorem mockCOps_step_eq (rawStmt : RawStmtHandle) (s : MockCState) :
            | [] => (.ok .done, s1)
            | tag :: rest => (.ok tag, { s1 with stepQueue := rest })) := rfl
 
-private theorem mockCOps_columnCount_eq (rawStmt : RawStmtHandle) (s : MockCState) :
+private theorem mockCOps_columnCount_eq (rawStmt : UInt64) (s : MockCState) :
     mockCOps.columnCount rawStmt s =
       (let stTok := rawStmtToken rawStmt
        let s1 : MockCState := { s with calls := s.calls ++ [MockCCall.columnCount stTok] }
@@ -383,7 +383,7 @@ private theorem decodeCols5_step (iVal : Int64) (fVal : Float) (sVal : String) (
     (hFail : st.failStep = .none)
     (hCols : st.mockColumns = #[.sqlNull, .sqlInt iVal, .sqlDouble fVal,
       .sqlTextBytes sVal.toUTF8, .sqlBlobBytes badUtf8]) :
-    (Internal.decodeColumns mockCOps (.mock 200) 5 5 #[]).run st =
+    (Internal.decodeColumns mockCOps (200 : UInt64) 5 5 #[]).run st =
     (.ok #[.null, .int iVal, .real fVal, .text sVal, .bytes badUtf8],
       { st with
         calls := st.calls ++
@@ -459,7 +459,7 @@ theorem proof_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFi
   intro code detail
   have hLive200 : hasLiveRawStmt 200 [(100, 200)] = true := rfl
   have hLiveDbNil : hasLiveRawStmtForDb 100 [] = false := rfl
-  have hActNil : Internal.hasActiveStmtForDb 1 [] = false := rfl
+  have hActNil : Internal.hasActiveStmtForDb 1 ([] : List (StmtHandle × UInt64)) = false := rfl
   dsimp only [test_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize,
     Internal.mkRawOps, assert]
   simp only [withStmtLock_mockCOps]
@@ -476,4 +476,4 @@ theorem reach_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFi
   ⟨19, "constraint",
     proof_sqliteraw_finalize_releasesStmtEvenOnStickyErrorAndRejectsDoubleFinalize 19 "constraint"⟩
 
-end LeanSwe.Sqlite.Raw.Proofs
+end LeanSwe.Sqlite.Proofs

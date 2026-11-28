@@ -2,67 +2,78 @@ import Core.Assumptions
 import Core.Obeys
 import LeanSweProofs.Sqlite.Model
 import LeanSwe.Sqlite.Interface
+import LeanSweProofs.Sqlite.Proofs.Helpers
+import LeanSweProofs.Sqlite.Proofs.ErrorAndFlagsProofs
+import LeanSweProofs.Sqlite.Proofs.WalProofs
+import LeanSweProofs.Sqlite.Proofs.UriProofs
+import LeanSweProofs.Sqlite.Proofs.StmtProofs
+import LeanSweProofs.Sqlite.Proofs.ObeysPureEquiv
+import LeanSweProofs.Sqlite.Proofs.ObeysModel
 
 namespace LeanSwe.Sqlite.Proofs
 
 open LeanSwe.Sqlite
 
+private theorem defaultOps_mapRawError_invalidArgument_kind (detail : String) :
+    (defaultOps.mapRawError (.invalidArgument detail)).kind = .invalidInput :=
+  rfl
+
 private theorem validateConfig_never (k : SqliteErrorKind) (hk : k ≠ .invalidInput) (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind k (LeanSwe.Sqlite.validateConfig cfg) := by
+    Core.NeverErrorKindPure SqliteError.kind k (LeanSwe.Sqlite.validateConfig cfg) := by
   unfold LeanSwe.Sqlite.validateConfig defaultApi Internal.mkApiM Internal.validateConfigWith
   dsimp only
   split
   · dsimp only [Core.NeverErrorKindPure]
-    rw [Raw.defaultOps_mapRawError_invalidArgument_kind]
+    rw [defaultOps_mapRawError_invalidArgument_kind]
     exact hk.symm
   · split
     · dsimp only [Core.NeverErrorKindPure]
-      rw [Raw.defaultOps_mapRawError_invalidArgument_kind]
+      rw [defaultOps_mapRawError_invalidArgument_kind]
       exact hk.symm
     · trivial
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.notFound`. -/
 theorem sqlite_validateConfig_never_notFound (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind .notFound (LeanSwe.Sqlite.validateConfig cfg) :=
+    Core.NeverErrorKindPure SqliteError.kind .notFound (LeanSwe.Sqlite.validateConfig cfg) :=
   validateConfig_never .notFound (by decide) cfg
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.busy`. -/
 theorem sqlite_validateConfig_never_busy (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind .busy (LeanSwe.Sqlite.validateConfig cfg) :=
+    Core.NeverErrorKindPure SqliteError.kind .busy (LeanSwe.Sqlite.validateConfig cfg) :=
   validateConfig_never .busy (by decide) cfg
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.constraint`. -/
 theorem sqlite_validateConfig_never_constraint (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind .constraint (LeanSwe.Sqlite.validateConfig cfg) :=
+    Core.NeverErrorKindPure SqliteError.kind .constraint (LeanSwe.Sqlite.validateConfig cfg) :=
   validateConfig_never .constraint (by decide) cfg
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.misuse`. -/
 theorem sqlite_validateConfig_never_misuse (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind .misuse (LeanSwe.Sqlite.validateConfig cfg) :=
+    Core.NeverErrorKindPure SqliteError.kind .misuse (LeanSwe.Sqlite.validateConfig cfg) :=
   validateConfig_never .misuse (by decide) cfg
 
 /-- `LeanSwe.Sqlite.validateConfig` never returns `.ioError`. -/
 theorem sqlite_validateConfig_never_ioError (cfg : OpenConfig) :
-    Core.NeverErrorKindPure Raw.SqliteError.kind .ioError (LeanSwe.Sqlite.validateConfig cfg) :=
+    Core.NeverErrorKindPure SqliteError.kind .ioError (LeanSwe.Sqlite.validateConfig cfg) :=
   validateConfig_never .ioError (by decide) cfg
 
-/-- `defaultApi` agrees definitionally with `Internal.mkApiM Raw.defaultOps`. -/
+/-- `defaultApi` agrees definitionally with `Internal.mkApiM defaultOps`. -/
 theorem sqlite_defaultApi_eq_mkApiM_defaultOps :
-    defaultApi = Internal.mkApiM Raw.defaultOps := rfl
+    defaultApi = Internal.mkApiM defaultOps := rfl
 
-/-- Every operation field of `defaultApi` agrees definitionally with `Internal.mkApiM Raw.defaultOps`. -/
+/-- Every operation field of `defaultApi` agrees definitionally with `Internal.mkApiM defaultOps`. -/
 theorem sqlite_defaultApi_fields_wired :
-    defaultApi.mapRawError = (Internal.mkApiM Raw.defaultOps).mapRawError ∧
-    defaultApi.validateConfig = (Internal.mkApiM Raw.defaultOps).validateConfig ∧
+    defaultApi.mapRawError = (Internal.mkApiM defaultOps).mapRawError ∧
+    defaultApi.validateConfig = (Internal.mkApiM defaultOps).validateConfig ∧
     (∀ {α : Type} (path : String) (cfg : OpenConfig) (action : DbHandle → IO (Except SqliteError α)),
-      defaultApi.withDb path cfg action = Internal.withDbOp Raw.defaultOps path cfg action) ∧
+      defaultApi.withDb path cfg action = Internal.withDbOp defaultOps path cfg action) ∧
     (∀ {α : Type} (db : DbHandle) (action : DbHandle → IO (Except SqliteError α)),
-      defaultApi.withTransaction db action = Internal.withTransactionOp Raw.defaultOps db action) ∧
-    (∀ db sql params, defaultApi.exec db sql params = Internal.execOp Raw.defaultOps db sql params) ∧
-    (∀ db sql params, defaultApi.query db sql params = Internal.queryOp Raw.defaultOps db sql params) ∧
-    (∀ db sql params, defaultApi.queryOne db sql params = Internal.queryOneOp Raw.defaultOps db sql params) ∧
-    defaultApi.activeDbCount = Raw.defaultOps.activeDbCount ∧
-    defaultApi.activeStmtCount = Raw.defaultOps.activeStmtCount :=
+      defaultApi.withTransaction db action = Internal.withTransactionOp defaultOps db action) ∧
+    (∀ db sql params, defaultApi.exec db sql params = Internal.execOp defaultOps db sql params) ∧
+    (∀ db sql params, defaultApi.query db sql params = Internal.queryOp defaultOps db sql params) ∧
+    (∀ db sql params, defaultApi.queryOne db sql params = Internal.queryOneOp defaultOps db sql params) ∧
+    defaultApi.activeDbCount = defaultOps.activeDbCount ∧
+    defaultApi.activeStmtCount = defaultOps.activeStmtCount :=
   ⟨rfl, rfl, fun _ _ _ => rfl, fun _ _ => rfl, fun _ _ _ => rfl,
    fun _ _ _ => rfl, fun _ _ _ => rfl, rfl, rfl⟩
 
@@ -156,56 +167,56 @@ theorem sqlite_mkApiM_modelRawOps_eq_modelApi :
     rfl
   exact mk_SqliteApiM_eq rfl hCfg hDb hTx hEx hQu rfl rfl rfl
 
-/-- Public `LeanSwe.Sqlite.mapRawError` agrees definitionally with `Raw.defaultOps.mapRawError`. -/
+/-- Public `LeanSwe.Sqlite.mapRawError` agrees definitionally with `defaultOps.mapRawError`. -/
 theorem sqlite_mapRawError_eq (err : SqliteRawError) :
-    LeanSwe.Sqlite.mapRawError err = Raw.defaultOps.mapRawError err := rfl
+    LeanSwe.Sqlite.mapRawError err = defaultOps.mapRawError err := rfl
 
-/-- Public `LeanSwe.Sqlite.withDb` agrees definitionally with `Internal.withDbOp Raw.defaultOps`. -/
+/-- Public `LeanSwe.Sqlite.withDb` agrees definitionally with `Internal.withDbOp defaultOps`. -/
 theorem sqlite_withDb_eq {α : Type} (path : String) (cfg : OpenConfig)
     (action : DbHandle → IO (Except SqliteError α)) :
-    LeanSwe.Sqlite.withDb path cfg action = Internal.withDbOp Raw.defaultOps path cfg action := rfl
+    LeanSwe.Sqlite.withDb path cfg action = Internal.withDbOp defaultOps path cfg action := rfl
 
-/-- Public `LeanSwe.Sqlite.withDb` with default configuration agrees with `Internal.withDbOp Raw.defaultOps path {}`. -/
+/-- Public `LeanSwe.Sqlite.withDb` with default configuration agrees with `Internal.withDbOp defaultOps path {}`. -/
 theorem sqlite_withDb_default_eq {α : Type} (path : String)
     (action : DbHandle → IO (Except SqliteError α)) :
-    LeanSwe.Sqlite.withDb path (action := action) = Internal.withDbOp Raw.defaultOps path {} action := rfl
+    LeanSwe.Sqlite.withDb path (action := action) = Internal.withDbOp defaultOps path {} action := rfl
 
-/-- Public `LeanSwe.Sqlite.withTransaction` agrees definitionally with `Internal.withTransactionOp Raw.defaultOps`. -/
+/-- Public `LeanSwe.Sqlite.withTransaction` agrees definitionally with `Internal.withTransactionOp defaultOps`. -/
 theorem sqlite_withTransaction_eq {α : Type} (db : DbHandle)
     (action : DbHandle → IO (Except SqliteError α)) :
-    LeanSwe.Sqlite.withTransaction db action = Internal.withTransactionOp Raw.defaultOps db action := rfl
+    LeanSwe.Sqlite.withTransaction db action = Internal.withTransactionOp defaultOps db action := rfl
 
-/-- Public `LeanSwe.Sqlite.exec` agrees definitionally with `Internal.execOp Raw.defaultOps`. -/
+/-- Public `LeanSwe.Sqlite.exec` agrees definitionally with `Internal.execOp defaultOps`. -/
 theorem sqlite_exec_eq (db : DbHandle) (sql : String) (params : Array SqliteValue) :
-    LeanSwe.Sqlite.exec db sql params = Internal.execOp Raw.defaultOps db sql params := rfl
+    LeanSwe.Sqlite.exec db sql params = Internal.execOp defaultOps db sql params := rfl
 
-/-- Public `LeanSwe.Sqlite.exec` with default empty parameters agrees with `Internal.execOp Raw.defaultOps db sql #[]`. -/
+/-- Public `LeanSwe.Sqlite.exec` with default empty parameters agrees with `Internal.execOp defaultOps db sql #[]`. -/
 theorem sqlite_exec_default_eq (db : DbHandle) (sql : String) :
-    LeanSwe.Sqlite.exec db sql = Internal.execOp Raw.defaultOps db sql #[] := rfl
+    LeanSwe.Sqlite.exec db sql = Internal.execOp defaultOps db sql #[] := rfl
 
-/-- Public `LeanSwe.Sqlite.query` agrees definitionally with `Internal.queryOp Raw.defaultOps`. -/
+/-- Public `LeanSwe.Sqlite.query` agrees definitionally with `Internal.queryOp defaultOps`. -/
 theorem sqlite_query_eq (db : DbHandle) (sql : String) (params : Array SqliteValue) :
-    LeanSwe.Sqlite.query db sql params = Internal.queryOp Raw.defaultOps db sql params := rfl
+    LeanSwe.Sqlite.query db sql params = Internal.queryOp defaultOps db sql params := rfl
 
-/-- Public `LeanSwe.Sqlite.query` with default empty parameters agrees with `Internal.queryOp Raw.defaultOps db sql #[]`. -/
+/-- Public `LeanSwe.Sqlite.query` with default empty parameters agrees with `Internal.queryOp defaultOps db sql #[]`. -/
 theorem sqlite_query_default_eq (db : DbHandle) (sql : String) :
-    LeanSwe.Sqlite.query db sql = Internal.queryOp Raw.defaultOps db sql #[] := rfl
+    LeanSwe.Sqlite.query db sql = Internal.queryOp defaultOps db sql #[] := rfl
 
-/-- Public `LeanSwe.Sqlite.queryOne` agrees definitionally with `Internal.queryOneOp Raw.defaultOps`. -/
+/-- Public `LeanSwe.Sqlite.queryOne` agrees definitionally with `Internal.queryOneOp defaultOps`. -/
 theorem sqlite_queryOne_eq (db : DbHandle) (sql : String) (params : Array SqliteValue) :
-    LeanSwe.Sqlite.queryOne db sql params = Internal.queryOneOp Raw.defaultOps db sql params := rfl
+    LeanSwe.Sqlite.queryOne db sql params = Internal.queryOneOp defaultOps db sql params := rfl
 
-/-- Public `LeanSwe.Sqlite.queryOne` with default empty parameters agrees with `Internal.queryOneOp Raw.defaultOps db sql #[]`. -/
+/-- Public `LeanSwe.Sqlite.queryOne` with default empty parameters agrees with `Internal.queryOneOp defaultOps db sql #[]`. -/
 theorem sqlite_queryOne_default_eq (db : DbHandle) (sql : String) :
-    LeanSwe.Sqlite.queryOne db sql = Internal.queryOneOp Raw.defaultOps db sql #[] := rfl
+    LeanSwe.Sqlite.queryOne db sql = Internal.queryOneOp defaultOps db sql #[] := rfl
 
-/-- Public `LeanSwe.Sqlite.activeDbCount` agrees definitionally with `Raw.defaultOps.activeDbCount`. -/
+/-- Public `LeanSwe.Sqlite.activeDbCount` agrees definitionally with `defaultOps.activeDbCount`. -/
 theorem sqlite_activeDbCount_eq :
-    LeanSwe.Sqlite.activeDbCount = Raw.defaultOps.activeDbCount := rfl
+    LeanSwe.Sqlite.activeDbCount = defaultOps.activeDbCount := rfl
 
-/-- Public `LeanSwe.Sqlite.activeStmtCount` agrees definitionally with `Raw.defaultOps.activeStmtCount`. -/
+/-- Public `LeanSwe.Sqlite.activeStmtCount` agrees definitionally with `defaultOps.activeStmtCount`. -/
 theorem sqlite_activeStmtCount_eq :
-    LeanSwe.Sqlite.activeStmtCount = Raw.defaultOps.activeStmtCount := rfl
+    LeanSwe.Sqlite.activeStmtCount = defaultOps.activeStmtCount := rfl
 
 private theorem mapRawError_eq_model (err : SqliteRawError) :
     LeanSwe.Sqlite.mapRawError err = Model.mapRawError err := by
@@ -229,9 +240,9 @@ private theorem rawMapEq {W : Type} (proj : W → Model.SqliteWorldState)
     (w : W) (err : SqliteRawError) :
     raw.mapRawError err = Model.modelRawOps.mapRawError err := by
   have h := hRaw w (.mapRawError err) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Pure.pure, StateT.pure] at h
-  exact Raw.Model.RawStepOut.mapRawError.inj h.1
+  exact Model.RawStepOut.mapRawError.inj h.1
 
 private theorem rawOpenEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -240,9 +251,9 @@ private theorem rawOpenEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.openDb path cfg w).1 = (Model.modelRawOps.openDb path cfg (proj w)).1 ∧
     proj (raw.openDb path cfg w).2 = (Model.modelRawOps.openDb path cfg (proj w)).2 := by
   have h := hRaw w (.openDb path cfg) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.openDb.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.openDb.inj h.1, h.2⟩
 
 private theorem rawCloseEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -251,9 +262,9 @@ private theorem rawCloseEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.closeDb db w).1 = (Model.modelRawOps.closeDb db (proj w)).1 ∧
     proj (raw.closeDb db w).2 = (Model.modelRawOps.closeDb db (proj w)).2 := by
   have h := hRaw w (.closeDb db) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.closeDb.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.closeDb.inj h.1, h.2⟩
 
 private theorem rawPrepareEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -262,9 +273,9 @@ private theorem rawPrepareEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.prepare db sql w).1 = (Model.modelRawOps.prepare db sql (proj w)).1 ∧
     proj (raw.prepare db sql w).2 = (Model.modelRawOps.prepare db sql (proj w)).2 := by
   have h := hRaw w (.prepare db sql) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.prepare.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.prepare.inj h.1, h.2⟩
 
 private theorem rawBindEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -273,9 +284,9 @@ private theorem rawBindEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.bind stmt params w).1 = (Model.modelRawOps.bind stmt params (proj w)).1 ∧
     proj (raw.bind stmt params w).2 = (Model.modelRawOps.bind stmt params (proj w)).2 := by
   have h := hRaw w (.bind stmt params) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.bind.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.bind.inj h.1, h.2⟩
 
 private theorem rawStepEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -284,9 +295,9 @@ private theorem rawStepEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.step stmt w).1 = (Model.modelRawOps.step stmt (proj w)).1 ∧
     proj (raw.step stmt w).2 = (Model.modelRawOps.step stmt (proj w)).2 := by
   have h := hRaw w (.step stmt) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.step.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.step.inj h.1, h.2⟩
 
 private theorem rawFinalizeEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw : RawSqliteOpsM (StateM W))
@@ -295,9 +306,9 @@ private theorem rawFinalizeEq {W : Type} (proj : W → Model.SqliteWorldState)
     (raw.finalize stmt w).1 = (Model.modelRawOps.finalize stmt (proj w)).1 ∧
     proj (raw.finalize stmt w).2 = (Model.modelRawOps.finalize stmt (proj w)).2 := by
   have h := hRaw w (.finalize stmt) rfl
-  simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+  simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
     Functor.map, StateT.map] at h
-  exact ⟨Raw.Model.RawStepOut.finalize.inj h.1, h.2⟩
+  exact ⟨Model.RawStepOut.finalize.inj h.1, h.2⟩
 
 private theorem state_bind_refines {W S α β : Type} (proj : W → S)
     {x : StateM W α} {y : StateM S α} {k1 : α → StateM W β} {k2 : α → StateM S β}
@@ -554,21 +565,31 @@ private theorem obeysStepFromFinally_mkApiM :
       (queryOneOp_refines proj raw hRaw db sql params w)
   | activeDbCount =>
     have h := hRaw w .activeDbCount rfl
-    simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+    simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
       Functor.map, StateT.map] at h
-    exact ⟨congrArg Model.PkgStepOut.count (Raw.Model.RawStepOut.activeDbCount.inj h.1), h.2⟩
+    exact ⟨congrArg Model.PkgStepOut.count (Model.RawStepOut.activeDbCount.inj h.1), h.2⟩
   | activeStmtCount =>
     have h := hRaw w .activeStmtCount rfl
-    simp only [Model.execRawStep, Raw.Model.execRawStep, Model.allowedRawStep, StateT.run,
+    simp only [Model.execRawStep, Model.execRawStep, Model.allowedRawStep, StateT.run,
       Functor.map, StateT.map] at h
-    exact ⟨congrArg Model.PkgStepOut.count (Raw.Model.RawStepOut.activeStmtCount.inj h.1), h.2⟩
+    exact ⟨congrArg Model.PkgStepOut.count (Model.RawStepOut.activeStmtCount.inj h.1), h.2⟩
 
 /-- Full public `Interface` obedience of `LeanSwe.Sqlite` against `LeanSwe.Sqlite.Model`. -/
 theorem obeys_model :
     Core.ObeysPureEq LeanSwe.Sqlite.mapRawError Model.mapRawError ∧
     Core.ObeysPureEq LeanSwe.Sqlite.validateConfig Model.validateConfig ∧
+    Core.ObeysStepFromFinally id Model.cStepWf
+      Model.execCStep Model.allowedCStep Model.rawOpsStepWf
+      (fun {m} [Monad m] [MonadFinally m] => @Internal.mkRawOps m _ _ UInt64 UInt64)
+      Model.execRawStep Model.allowedRawOpsStep ∧
     Core.ObeysStepFromFinally id Model.rawStepWf Model.execRawStep Model.allowedRawStep
       Model.rawStepWf Internal.mkApiM Model.execPkgStep Model.allowedPkgStep :=
-  ⟨mapRawError_eq_model, validateConfig_eq_model, obeysStepFromFinally_mkApiM⟩
+  ⟨mapRawError_eq_model, validateConfig_eq_model, mkRawOps_obeys, obeysStepFromFinally_mkApiM⟩
+
+/-- Concrete non-vacuity witness instantiating the raw `CSqliteOpsM` refinement in `obeys_model`. -/
+theorem obeys_model_nonvacuous :
+    Core.ObeysStepId Model.rawOpsStepWf
+      (Model.execRawStep (Internal.mkRawOps Model.modelCSqliteOps)) Model.allowedRawOpsStep :=
+  mkRawOps_obeys id Model.modelCSqliteOps modelCSqliteOps_obeys
 
 end LeanSwe.Sqlite.Proofs
